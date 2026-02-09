@@ -14,29 +14,23 @@ use crate::inspiring::{ClientPackingKeys, PackParams};
 use crate::lwe::LweSecretKey;
 use crate::math::GaussianSampler;
 use crate::params::ShardConfig;
-use crate::rgsw::{
-    GadgetVector, RgswCiphertext, SeededRgswCiphertext,
-};
+use crate::rgsw::{GadgetVector, RgswCiphertext, SeededRgswCiphertext};
 use crate::rlwe::RlweSecretKey;
 
 use super::encode_db::inverse_monomial;
-use super::setup::ServerCrs;
 use super::error::Result;
+use super::setup::ServerCrs;
 
 /// Packing algorithm selection for server responses.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum PackingMode {
     /// Default: require InspiRING packing keys (fast path).
+    #[default]
     Inspiring,
     /// Explicitly request tree packing (slower, log(d) matrices).
     Tree,
-}
-
-impl Default for PackingMode {
-    fn default() -> Self {
-        PackingMode::Inspiring
-    }
 }
 
 /// Build a seeded query using a specific gadget vector.

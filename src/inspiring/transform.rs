@@ -80,11 +80,11 @@ pub fn transform_partial(
     for j in 0..gamma {
         // Group coefficients: a_polys[j] aggregates coefficients [j*group_size, (j+1)*group_size)
         let mut coeffs = vec![0u64; d];
-        for k in 0..group_size {
+        for (k, coeff) in coeffs.iter_mut().enumerate().take(group_size) {
             let idx = j * group_size + k;
             if idx < lwe.a.len() {
                 // Place coefficient at position k in the polynomial
-                coeffs[k] = lwe.a[idx];
+                *coeff = lwe.a[idx];
             }
         }
         a_polys.push(Poly::from_coeffs_moduli(coeffs, moduli));
@@ -329,7 +329,7 @@ mod tests {
         let lwe = random_lwe(&mut rng, &params);
 
         let intermediate = transform(&lwe, &params);
-        let aggregated = aggregate(&[intermediate.clone()], &params);
+        let aggregated = aggregate(std::slice::from_ref(&intermediate), &params);
 
         // Single ciphertext: aggregated should match intermediate
         assert_eq!(aggregated.dimension(), intermediate.dimension());

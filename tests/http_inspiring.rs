@@ -94,13 +94,18 @@ async fn http_inspiring_requires_packing_keys() {
         .collect();
 
     let mut sampler = GaussianSampler::new(params.sigma);
-    let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler)
-        .expect("setup should succeed");
+    let (crs, encoded_db, rlwe_sk) =
+        setup(&params, &database, entry_size, &mut sampler).expect("setup should succeed");
 
     let target_index = 42u64;
-    let (state, mut client_query) =
-        query(&crs, target_index, &encoded_db.config, &rlwe_sk, &mut sampler)
-            .expect("query should succeed");
+    let (state, mut client_query) = query(
+        &crs,
+        target_index,
+        &encoded_db.config,
+        &rlwe_sk,
+        &mut sampler,
+    )
+    .expect("query should succeed");
 
     // Ensure we request InspiRING explicitly
     client_query.packing_mode = PackingMode::Inspiring;
@@ -110,7 +115,9 @@ async fn http_inspiring_requires_packing_keys() {
         db: encoded_db.clone(),
     });
 
-    let app = Router::new().route("/query", post(handle_query)).with_state(app_state);
+    let app = Router::new()
+        .route("/query", post(handle_query))
+        .with_state(app_state);
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -133,10 +140,7 @@ async fn http_inspiring_requires_packing_keys() {
         .expect("request should succeed");
 
     assert!(ok_response.status().is_success());
-    let ok_body: QueryResponse = ok_response
-        .json()
-        .await
-        .expect("parse response");
+    let ok_body: QueryResponse = ok_response.json().await.expect("parse response");
 
     let extracted = extract_inspiring(&crs, &state, &ok_body.response, entry_size)
         .expect("extract should succeed");
@@ -156,13 +160,8 @@ async fn http_inspiring_requires_packing_keys() {
         .expect("request should succeed");
 
     assert_eq!(err_response.status(), StatusCode::BAD_REQUEST);
-    let err_body: ErrorResponse = err_response
-        .json()
-        .await
-        .expect("parse error response");
-    assert!(err_body
-        .error
-        .contains("InspiRING packing keys missing"));
+    let err_body: ErrorResponse = err_response.json().await.expect("parse error response");
+    assert!(err_body.error.contains("InspiRING packing keys missing"));
 
     server_handle.abort();
 }

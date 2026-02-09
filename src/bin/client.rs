@@ -4,7 +4,7 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -229,7 +229,7 @@ async fn get_params(server: &str) -> Result<()> {
 
 async fn query_by_index(
     server: &str,
-    sk_path: &PathBuf,
+    sk_path: &Path,
     index: u64,
     variant: VariantChoice,
     packing_mode: PackingModeChoice,
@@ -328,8 +328,8 @@ async fn query_by_index(
 
 async fn query_storage(
     server: &str,
-    sk_path: &PathBuf,
-    state_path: &PathBuf,
+    sk_path: &Path,
+    state_path: &Path,
     address: &str,
     slot: &str,
     variant: VariantChoice,
@@ -375,15 +375,15 @@ async fn query_storage(
 
 async fn batch_query(
     server: &str,
-    sk_path: &PathBuf,
-    file: &PathBuf,
+    sk_path: &Path,
+    file: &Path,
     variant: VariantChoice,
     packing_mode: PackingModeChoice,
 ) -> Result<()> {
     info!("Loading secret key...");
     let secret_key = load_secret_key(sk_path)?;
 
-    let file = File::open(file).with_context(|| format!("Failed to open batch file"))?;
+    let file = File::open(file).with_context(|| "Failed to open batch file".to_string())?;
     let reader = BufReader::new(file);
 
     let indices: Vec<u64> = reader
@@ -514,7 +514,7 @@ async fn fetch_params(server: &str) -> Result<ParamsResponse> {
     Ok(params)
 }
 
-fn load_secret_key(path: &PathBuf) -> Result<RlweSecretKey> {
+fn load_secret_key(path: &Path) -> Result<RlweSecretKey> {
     let file = File::open(path)
         .with_context(|| format!("Failed to open secret key file: {}", path.display()))?;
     let reader = BufReader::new(file);

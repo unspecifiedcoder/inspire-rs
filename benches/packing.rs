@@ -148,8 +148,7 @@ fn comparison_benchmark(c: &mut Criterion) {
             let mut msg_coeffs = vec![0u64; d];
             msg_coeffs[0] = msg;
             let msg_poly = Poly::from_coeffs(msg_coeffs, q);
-            let rlwe_ct =
-                inspire::rlwe::RlweCiphertext::trivial_encrypt(&msg_poly, delta, &params);
+            let rlwe_ct = inspire::rlwe::RlweCiphertext::trivial_encrypt(&msg_poly, delta, &params);
             rlwe_ct.sample_extract_coeff0()
         })
         .collect();
@@ -200,8 +199,7 @@ fn production_comparison_benchmark(c: &mut Criterion) {
             let mut msg_coeffs = vec![0u64; d];
             msg_coeffs[0] = msg;
             let msg_poly = Poly::from_coeffs(msg_coeffs, q);
-            let rlwe_ct =
-                inspire::rlwe::RlweCiphertext::trivial_encrypt(&msg_poly, delta, &params);
+            let rlwe_ct = inspire::rlwe::RlweCiphertext::trivial_encrypt(&msg_poly, delta, &params);
             rlwe_ct.sample_extract_coeff0()
         })
         .collect();

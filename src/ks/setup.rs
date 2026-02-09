@@ -140,7 +140,7 @@ pub fn generate_ks_matrix(
     let moduli = from_key.poly.moduli();
     let mut rows = Vec::with_capacity(ell);
 
-    for i in 0..ell {
+    for &power in powers.iter().take(ell) {
         // Sample random a_i
         let a = Poly::random_moduli(d, moduli);
 
@@ -152,7 +152,7 @@ pub fn generate_ks_matrix(
         let neg_a_s_prime = -a_times_s_prime;
 
         // s·z^i
-        let s_scaled = from_key.poly.scalar_mul(powers[i]);
+        let s_scaled = from_key.poly.scalar_mul(power);
 
         // b = -a·s' + e + s·z^i
         let b = &(&neg_a_s_prime + &error) + &s_scaled;
@@ -306,11 +306,7 @@ mod tests {
                 let exp_val = expected.coeff(j);
 
                 // Compute difference in centered representation
-                let diff = if dec_val >= exp_val {
-                    dec_val - exp_val
-                } else {
-                    exp_val - dec_val
-                };
+                let diff = dec_val.abs_diff(exp_val);
                 let centered_diff = std::cmp::min(diff, params.q - diff);
 
                 assert!(

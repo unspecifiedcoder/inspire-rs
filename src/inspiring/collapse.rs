@@ -55,9 +55,8 @@ pub fn collapse(
     }
 
     // Final collapse using K_h to get standard RLWE
-    let final_ct = final_collapse(&current, k_h, h, &ctx, params);
 
-    final_ct
+    final_collapse(&current, k_h, h, &ctx, params)
 }
 
 /// CollapseHalf: reduce dimension by half using K_g

@@ -43,9 +43,7 @@ pub fn key_switch(
     let mut result_b = ct.b.clone();
 
     // Accumulate: Σᵢ aᵢ · K[i]
-    for i in 0..ell {
-        let ks_row = &ks_matrix.rows[i];
-
+    for (i, ks_row) in ks_matrix.rows.iter().enumerate().take(ell) {
         // aᵢ · K[i].a
         let term_a = a_decomp[i].mul_ntt(&ks_row.a, ctx);
         result_a += term_a;
@@ -93,9 +91,7 @@ pub fn key_switch_ntt(
     result_b.to_ntt(ctx);
 
     // Accumulate in NTT domain
-    for i in 0..ell {
-        let ks_row = &ks_matrix.rows[i];
-
+    for (i, ks_row) in ks_matrix.rows.iter().enumerate().take(ell) {
         // Convert KS row to NTT if needed
         let mut ks_a = ks_row.a.clone();
         let mut ks_b = ks_row.b.clone();
@@ -165,10 +161,10 @@ mod tests {
 
         // Verify original decryption under sk1
         let dec1 = ct1.decrypt(&sk1, delta, params.p, &ctx);
-        for i in 0..params.ring_dim {
+        for (i, &expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
             assert_eq!(
                 dec1.coeff(i),
-                msg_coeffs[i],
+                expected,
                 "Original decryption failed at {}",
                 i
             );
@@ -179,10 +175,10 @@ mod tests {
 
         // Verify decryption under sk2
         let dec2 = ct2.decrypt(&sk2, delta, params.p, &ctx);
-        for i in 0..params.ring_dim {
+        for (i, &expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
             assert_eq!(
                 dec2.coeff(i),
-                msg_coeffs[i],
+                expected,
                 "Key-switched decryption failed at coefficient {}",
                 i
             );
@@ -245,10 +241,10 @@ mod tests {
         // Should still decrypt correctly
         let decrypted = ct_switched.decrypt(&sk, delta, params.p, &ctx);
 
-        for i in 0..params.ring_dim {
+        for (i, &expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
             assert_eq!(
                 decrypted.coeff(i),
-                msg_coeffs[i],
+                expected,
                 "Mismatch at coefficient {}",
                 i
             );
@@ -283,9 +279,9 @@ mod tests {
         let dec_basic = ct_basic.decrypt(&sk2, delta, params.p, &ctx);
         let dec_ntt = ct_ntt.decrypt(&sk2, delta, params.p, &ctx);
 
-        for i in 0..params.ring_dim {
-            assert_eq!(dec_basic.coeff(i), msg_coeffs[i]);
-            assert_eq!(dec_ntt.coeff(i), msg_coeffs[i]);
+        for (i, &expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
+            assert_eq!(dec_basic.coeff(i), expected);
+            assert_eq!(dec_ntt.coeff(i), expected);
         }
     }
 
