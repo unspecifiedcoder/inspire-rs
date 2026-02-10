@@ -7,17 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- Updated README badges to reflect the renamed `inspire` crate on crates.io.
-
-### In-Flight (unmerged branches)
-
-- `feat/inspire-packing-variants` — packing variant work
-- `lint-fix/clippy-and-fmt` — clippy and rustfmt fixes
-- `lint-fix/auto-fixes` — automated lint fixes
-- `chore/commit-normalize` — commit message normalization
-- `nightshift/changelog-synth` — changelog restructuring
+_No substantive changes since v0.1.2. The single post-release commit (68214e0) updated README badges, which is a metadata-only change not tracked here per Keep a Changelog conventions._
 
 ## [0.1.2] - 2026-01-12
 
