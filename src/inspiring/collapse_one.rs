@@ -19,7 +19,7 @@ use crate::rgsw::GadgetVector;
 ///
 /// The correct key-switching algorithm (from ks/switch.rs):
 /// 1. Decompose a_{k-1} using gadget: g⁻¹(a) = [a₀, a₁, ..., a_{ℓ-1}]
-/// 2. Compute: (a', b') = (0, b) + Σᵢ aᵢ · K[i]
+/// 2. Compute: (a', b') = (0, b) + Σᵢ aᵢ · K\[i\]
 ///    - MUST use BOTH ks_row.a and ks_row.b for each row
 ///
 /// # Arguments

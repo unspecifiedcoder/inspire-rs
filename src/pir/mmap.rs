@@ -84,6 +84,7 @@ pub fn load_shard_binary(path: &Path) -> Result<ShardData> {
 /// Memory-mapped database that loads shards on demand
 pub struct MmapDatabase {
     shard_dir: std::path::PathBuf,
+    /// Shard configuration for this database
     pub config: ShardConfig,
     num_shards: u32,
 }

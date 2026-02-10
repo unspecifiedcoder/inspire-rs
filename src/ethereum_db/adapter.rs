@@ -236,7 +236,7 @@ impl EthereumStateDb {
 /// Encoded database ready for PIR queries
 #[derive(Debug, Clone)]
 pub struct EncodedDatabase {
-    /// Shard data (each shard is a Vec<u8> of packed entries)
+    /// Shard data (each shard is a `Vec<u8>` of packed entries)
     pub shards: Vec<Vec<u8>>,
     /// Shard configuration
     pub shard_config: ShardConfig,

@@ -1,11 +1,11 @@
-//! Polynomial operations over R_q = Z_q[X]/(X^d + 1).
+//! Polynomial operations over R_q = Z_q\[X\]/(X^d + 1).
 //!
 //! Provides polynomial arithmetic using NTT for efficient multiplication.
 //! Polynomials can exist in either coefficient domain or NTT domain.
 //!
 //! # Overview
 //!
-//! The polynomial ring R_q = Z_q[X]/(X^d + 1) is fundamental to lattice-based
+//! The polynomial ring R_q = Z_q\[X\]/(X^d + 1) is fundamental to lattice-based
 //! cryptography. This module provides:
 //!
 //! - Basic arithmetic: addition, subtraction, negation, scalar multiplication
@@ -38,7 +38,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-/// Polynomial in R_q = Z_q[X]/(X^d + 1).
+/// Polynomial in R_q = Z_q\[X\]/(X^d + 1).
 ///
 /// Represents a polynomial with coefficients in Z_q, reduced modulo X^d + 1.
 /// Polynomials can be in coefficient domain or NTT domain for efficient

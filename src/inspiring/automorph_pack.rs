@@ -19,7 +19,7 @@
 //!    - At each level, compute: ct_even + y * ct_odd, ct_even - y * ct_odd
 //!    - Apply automorphism τ_t and key-switch to combine pairs
 //!
-//! 3. **Finalize**: Add b_values[z] * d to result.b[z] for each coefficient
+//! 3. **Finalize**: Add b_values\[z\] * d to result.b\[z\] for each coefficient
 //!
 //! The key insight is that we only tree-pack the 'a' polynomials, then add
 //! the scaled 'b' values at the end. This avoids the noise mixing problem.
@@ -80,13 +80,13 @@ pub fn homomorphic_automorph(
 /// Y-constants for tree packing at each level
 ///
 /// At level ℓ, we use y = ω^(d / 2^ℓ) where ω is a primitive 2d-th root of unity.
-/// In the polynomial ring Z_q[X]/(X^d + 1), X is a primitive 2d-th root of unity.
+/// In the polynomial ring Z_q\[X\]/(X^d + 1), X is a primitive 2d-th root of unity.
 ///
 /// The y-constants are polynomials representing X^(d / 2^ℓ).
 pub struct YConstants {
-    /// Y values at each level: y[ℓ] = X^(d / 2^(ℓ+1))
+    /// Y values at each level: y\[ℓ\] = X^(d / 2^(ℓ+1))
     pub y_polys: Vec<Poly>,
-    /// Negative Y values at each level: -y[ℓ]
+    /// Negative Y values at each level: -y\[ℓ\]
     pub neg_y_polys: Vec<Poly>,
 }
 
