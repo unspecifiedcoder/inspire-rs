@@ -26,9 +26,9 @@ pub fn gadget_decompose(poly: &Poly, gadget: &GadgetVector) -> Vec<Poly> {
     for j in 0..d {
         let mut val = poly.coeff(j);
 
-        for i in 0..ell {
+        for item in result.iter_mut().take(ell) {
             let digit = val % base;
-            result[i].set_coeff(j, digit);
+            item.set_coeff(j, digit);
             val /= base;
         }
     }
@@ -279,10 +279,10 @@ mod tests {
         let result = external_product(&rlwe, &rgsw_one, &ctx);
         let decrypted = result.decrypt(&sk, delta, params.p, &ctx);
 
-        for i in 0..params.ring_dim {
+        for (i, expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
             assert_eq!(
                 decrypted.coeff(i),
-                msg_coeffs[i],
+                *expected,
                 "Mismatch at coefficient {}",
                 i
             );
@@ -315,8 +315,8 @@ mod tests {
         let result = external_product(&rlwe, &rgsw_scalar, &ctx);
         let decrypted = result.decrypt(&sk, delta, params.p, &ctx);
 
-        for i in 0..params.ring_dim {
-            let expected = (msg_coeffs[i] * scalar) % params.p;
+        for (i, msg_coeff) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
+            let expected = (*msg_coeff * scalar) % params.p;
             assert_eq!(
                 decrypted.coeff(i),
                 expected,

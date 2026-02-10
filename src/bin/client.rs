@@ -4,7 +4,7 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -329,7 +329,7 @@ async fn query_by_index(
 async fn query_storage(
     server: &str,
     sk_path: &PathBuf,
-    state_path: &PathBuf,
+    state_path: &Path,
     address: &str,
     slot: &str,
     variant: VariantChoice,
@@ -383,7 +383,7 @@ async fn batch_query(
     info!("Loading secret key...");
     let secret_key = load_secret_key(sk_path)?;
 
-    let file = File::open(file).with_context(|| format!("Failed to open batch file"))?;
+    let file = File::open(file).with_context(|| "Failed to open batch file".to_string())?;
     let reader = BufReader::new(file);
 
     let indices: Vec<u64> = reader

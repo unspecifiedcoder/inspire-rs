@@ -520,7 +520,7 @@ impl ShardConfig {
     /// assert!(num_shards > 70 && num_shards < 80);
     /// ```
     pub fn num_shards(&self) -> u64 {
-        (self.total_entries + self.entries_per_shard() - 1) / self.entries_per_shard()
+        self.total_entries.div_ceil(self.entries_per_shard())
     }
 
     /// Converts a global index to shard coordinates.

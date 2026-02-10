@@ -58,9 +58,7 @@ pub use encode_db::{encode_column, encode_database, encode_direct, inverse_monom
 pub use extract::{extract, extract_inspiring, extract_two_packing, extract_with_variant};
 #[cfg(feature = "server")]
 pub use mmap::{load_shard_binary, save_shards_binary, MmapDatabase};
-pub use query::{
-    query, query_seeded, ClientQuery, ClientState, PackingMode, SeededClientQuery,
-};
+pub use query::{query, query_seeded, ClientQuery, ClientState, PackingMode, SeededClientQuery};
 pub use respond::{
     respond, respond_inspiring, respond_one_packing, respond_seeded, respond_seeded_inspiring,
     respond_seeded_packed, respond_seeded_with_variant, respond_sequential, respond_with_variant,

@@ -168,12 +168,10 @@ fn test_realistic_ethereum_values() {
         database.extend_from_slice(value);
     }
 
-    let num_entries = realistic_values.len();
-
     let mut sampler = GaussianSampler::new(params.sigma);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
-    for target_idx in 0..num_entries {
+    for (target_idx, realistic_value) in realistic_values.iter().enumerate() {
         let (state, client_query) = query(
             &crs,
             target_idx as u64,
@@ -187,7 +185,7 @@ fn test_realistic_ethereum_values() {
 
         assert_eq!(
             result.as_slice(),
-            &realistic_values[target_idx],
+            realistic_value,
             "Realistic value {} mismatch",
             target_idx
         );

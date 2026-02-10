@@ -4,7 +4,7 @@
 
 use std::fs::File;
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -22,8 +22,8 @@ use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use inspire::pir::{
-    respond_inspiring, respond_mmap_one_packing, respond_one_packing, respond_seeded_inspiring,
-    respond_seeded_packed, respond_mmap_inspiring, ClientQuery, EncodedDatabase, InspireCrs,
+    respond_inspiring, respond_mmap_inspiring, respond_mmap_one_packing, respond_one_packing,
+    respond_seeded_inspiring, respond_seeded_packed, ClientQuery, EncodedDatabase, InspireCrs,
     MmapDatabase, PackingMode, SeededClientQuery, ServerResponse,
 };
 
@@ -336,7 +336,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_metadata(data_dir: &PathBuf) -> Result<ServerMetadata> {
+fn load_metadata(data_dir: &Path) -> Result<ServerMetadata> {
     let meta_path = data_dir.join("metadata.json");
 
     if meta_path.exists() {
