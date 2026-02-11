@@ -271,6 +271,7 @@ A local git hook validates this automatically. Enable it with:
 
 ```bash
 git config core.hooksPath .githooks
+chmod +x .githooks/commit-msg
 ```
 
 ## License
