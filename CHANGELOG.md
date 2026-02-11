@@ -17,16 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Renamed crate from `inspire-rs` to `inspire` and bumped version to 0.1.2.
 - Added crates.io metadata (description, license, repository, keywords, categories).
-- InspiRING is the network default when packing keys are present; queries now fall back to tree packing when keys/CRS support are absent.
-- Added clear validation for InspiRING packing keys over HTTP (error when missing; derive rotations when only y_body is sent).
-
-### Removed
-
-- Removed the experimental InsPIRe^2+ (modulus-switching) variant; public APIs now expose only ^0/^1/^2.
-
-### Added
-
-- Added SECURITY.md documenting supported variants and the removal rationale for modulus switching.
 
 ## [0.1.1] - 2026-01-12
 
@@ -105,6 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Benchmark examples: `cargo run --example benchmark_variants --release`, `cargo run --example benchmark_seed_expansion`
 - New e2e tests: `test_e2e_variant_no_packing`, `test_variant_packing_unimplemented`
 - Implementation comparison report: docs/IMPLEMENTATION_COMPARISON.md
+- Added SECURITY.md documenting supported variants and the removal rationale for modulus switching.
 
 ### Changed
 
