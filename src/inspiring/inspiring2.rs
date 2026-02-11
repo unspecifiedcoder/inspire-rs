@@ -1,7 +1,7 @@
 //! InspiRING 2-Matrix Packing Algorithm (Canonical Implementation)
 //!
 //! This is a faithful port of Google's reference implementation from:
-//! https://github.com/google/private-membership/tree/main/research/InsPIRe
+//! <https://github.com/google/private-membership/tree/main/research/InsPIRe>
 //!
 //! # Algorithm Overview
 //!
@@ -26,7 +26,7 @@
 //!
 //! ## Offline/Online Separation
 //!
-//! - **Offline**: Compute R[i] inner products, apply automorphisms, backward recursion → a_hat, bold_t
+//! - **Offline**: Compute R\[i\] inner products, apply automorphisms, backward recursion → a_hat, bold_t
 //! - **Online**: Compute y_all × bold_t + b_poly → packed ciphertext
 //!
 //! ## Complexity Comparison
@@ -37,8 +37,8 @@
 //! | InspiRING 2-Matrix | 2           | 2 × d × ℓ    |
 //!
 //! # References
-//! - InsPIRe paper: https://eprint.iacr.org/2024/XXX
-//! - Google reference: https://github.com/google/private-membership/tree/main/research/InsPIRe
+//! - InsPIRe paper: <https://eprint.iacr.org/2025/1352>
+//! - Google reference: <https://github.com/google/private-membership/tree/main/research/InsPIRe>
 
 use crate::lwe::LweCiphertext;
 use crate::math::{GaussianSampler, NttContext, Poly};
@@ -71,7 +71,7 @@ pub struct PackParams {
     pub moduli: Vec<u64>,
     /// Generator for the multiplicative group
     pub generator: usize,
-    /// Powers of generator: gen_pows[i] = g^i mod 2n
+    /// Powers of generator: gen_pows\[i\] = g^i mod 2n
     pub gen_pows: Vec<usize>,
     /// Modular inverse of γ: 1/γ mod q (scalar form)
     pub mod_inv_gamma: u64,
@@ -88,8 +88,8 @@ pub struct PackParams {
     /// Gadget parameters
     pub gadget: GadgetVector,
     /// Automorphism tables for NTT-domain automorphisms
-    /// tables[t_idx] maps NTT index i → source index for automorphism τ_t
-    /// where t_idx = (t - 1) / 2 for odd t in [1, 2n)
+    /// tables\[t_idx\] maps NTT index i → source index for automorphism τ_t
+    /// where t_idx = (t - 1) / 2 for odd t in \[1, 2n)
     pub automorph_tables: Vec<Vec<usize>>,
 }
 
@@ -355,7 +355,7 @@ pub fn apply_automorphism_ntt_double(
 /// We store bold_t in both coefficient and NTT form for maximum flexibility.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PrecompInsPIR {
-    /// a_hat = R[0] after backward recursion (the 'a' component of packed ciphertext)
+    /// a_hat = R\[0\] after backward recursion (the 'a' component of packed ciphertext)
     pub a_hat: Poly,
     /// bold_t: gadget-decomposed R[i+1] values, shape (γ-1) × gadget_len (coefficient form)
     pub bold_t: Vec<Vec<Poly>>,
@@ -425,11 +425,11 @@ pub struct OfflinePackingKeys {
     pub w_mask: Vec<Poly>,
     /// v_mask: random matrix for conjugation (full packing only)
     pub v_mask: Vec<Poly>,
-    /// w_all[i] = τ_{g^i}(w_mask) - rotations of w_mask (coefficient form)
+    /// w_all\[i\] = τ_{g^i}(w_mask) - rotations of w_mask (coefficient form)
     pub w_all: Vec<Vec<Poly>>,
     /// w_all in NTT form for fast multiplication
     pub w_all_ntt: Vec<Vec<Poly>>,
-    /// w_bar_all[i] = τ_{2n-g^i}(w_mask) - negative rotations (full packing)
+    /// w_bar_all\[i\] = τ_{2n-g^i}(w_mask) - negative rotations (full packing)
     pub w_bar_all: Vec<Vec<Poly>>,
     /// w_bar_all in NTT form
     pub w_bar_all_ntt: Vec<Vec<Poly>>,
@@ -603,7 +603,7 @@ impl OfflinePackingKeys {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClientPackingKeys {
     /// y_body: key-switching body for generator g
-    /// y_body[k] = τ_g(s)·g^k - s·w_mask[k] + error
+    /// y_body\[k\] = τ_g(s)·g^k - s·w_mask\[k\] + error
     pub y_body: Vec<Poly>,
     /// z_body: key-switching body for conjugation h (full packing only)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -632,7 +632,7 @@ impl ClientPackingKeys {
     ///
     /// This is called by the client during query generation.
     ///
-    /// Following Google's reference: uses gen_pows[1] (= g^1 = generator) for y_body.
+    /// Following Google's reference: uses gen_pows\[1\] (= g^1 = generator) for y_body.
     ///
     /// **Performance optimizations** (matching Google):
     /// - Uses NTT-domain automorphisms via lookup tables: O(n) vs O(n log n)
@@ -708,7 +708,7 @@ impl ClientPackingKeys {
 
     /// Generate client packing keys for full packing (γ = n)
     ///
-    /// Following Google's reference: uses gen_pows[1] for y_body, (2n-1) for z_body.
+    /// Following Google's reference: uses gen_pows\[1\] for y_body, (2n-1) for z_body.
     ///
     /// **Performance**: Precomputes y_all and y_bar_all in both forms.
     pub fn generate_full(
@@ -918,11 +918,11 @@ pub type PackingKeyBody = OfflinePackingKeys;
 /// - All operations stay in NTT domain until final output
 ///
 /// # Algorithm
-/// 1. For each i in 0..γ: compute R[i] = (1/γ) · τ_{g^i}(Σ_j X^{j·g^{n-i}} · a_j)
+/// 1. For each i in 0..γ: compute R\[i\] = (1/γ) · τ_{g^i}(Σ_j X^{j·g^{n-i}} · a_j)
 /// 2. Backward recursion: for i from γ-2 down to 0:
-///    - T[i] = G^{-1}(R[i+1])
-///    - R[i] += Σ_k w_all[i][k] · T[i][k]
-/// 3. Return a_hat = R[0], bold_t = [T[0], ..., T[γ-2]]
+///    - T\[i\] = G^{-1}(R\[i+1\])
+///    - R\[i\] += Σ_k w_all\[i\]\[k\] · T\[i\]\[k\]
+/// 3. Return a_hat = R\[0\], bold_t = \[T\[0\], ..., T\[γ-2\]\]
 pub fn packing_offline(
     pack_params: &PackParams,
     packing_key: &PackingKeyBody,
@@ -1305,26 +1305,16 @@ pub fn packing_online_fully_ntt(
 
 /// Generate rotations of key body for online phase
 ///
-/// y_all[i] = τ_{g^i}(y_body) for i in 0..γ-1
+/// y_all\[i\] = τ_{g^i}(y_body) for i in 0..γ-1
 pub fn generate_rotations(pack_params: &PackParams, y_body: &[Poly]) -> Vec<Vec<Poly>> {
     let num_to_pack = pack_params.num_to_pack;
     let gen_pows = &pack_params.gen_pows;
-    if num_to_pack <= 1 {
-        return Vec::new();
-    }
-    let required = num_to_pack - 1;
-    assert!(
-        gen_pows.len() >= required,
-        "generator powers must have at least {} entries, got {}",
-        required,
-        gen_pows.len()
-    );
 
-    let mut y_all = Vec::with_capacity(required);
-    for &g_pow_i in &gen_pows[..required] {
+    let mut y_all = Vec::with_capacity(num_to_pack - 1);
+    for g_pow_i in gen_pows.iter().take(num_to_pack - 1) {
         let rotated: Vec<Poly> = y_body
             .iter()
-            .map(|poly| apply_automorphism(poly, g_pow_i))
+            .map(|poly| apply_automorphism(poly, *g_pow_i))
             .collect();
         y_all.push(rotated);
     }
@@ -1378,13 +1368,18 @@ pub fn pack_inspiring(
 /// Generator powers table (legacy compatibility)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GeneratorPowers {
+    /// Forward powers: g^0, g^1, ..., g^{d-1} mod 2d
     pub powers: Vec<usize>,
+    /// Inverse powers for i = 0..d-1: g^{-i} mod 2d (i=0 gives 1)
     pub inv_powers: Vec<usize>,
+    /// Multiplicative group generator
     pub generator: usize,
+    /// Ring dimension d
     pub ring_dim: usize,
 }
 
 impl GeneratorPowers {
+    /// Create generator powers table for ring dimension d
     pub fn new(d: usize) -> Self {
         let two_d = 2 * d;
         // Use canonical generator for full packing
@@ -1413,20 +1408,24 @@ impl GeneratorPowers {
         }
     }
 
+    /// Number of generator powers (equals ring dimension)
     pub fn order(&self) -> usize {
         self.powers.len()
     }
 
+    /// Get g^i mod 2d (wraps cyclically)
     #[inline]
     pub fn pow(&self, i: usize) -> usize {
         self.powers[i % self.powers.len()]
     }
 
+    /// Get g^{-i} mod 2d (wraps cyclically)
     #[inline]
     pub fn inv_pow(&self, i: usize) -> usize {
         self.inv_powers[i % self.inv_powers.len()]
     }
 
+    /// Get the generator value
     #[inline]
     pub fn generator(&self) -> usize {
         self.generator
@@ -1436,24 +1435,35 @@ impl GeneratorPowers {
 /// Legacy precomputation struct
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InspiringPrecomputation {
+    /// Generator powers table
     pub gen_pows: GeneratorPowers,
+    /// Rotated key-switching matrix
     pub rotated_k_g: RotatedKsMatrix,
+    /// R polynomials from backward recursion
     pub r_polys: Vec<Poly>,
+    /// Gadget-decomposed T values for online phase
     pub bold_t: Vec<Vec<Poly>>,
+    /// Number of items packed
     pub num_to_pack: usize,
+    /// Ring dimension
     pub ring_dim: usize,
+    /// Ciphertext modulus
     pub q: u64,
 }
 
 /// Legacy rotated KS matrix (kept for API compatibility)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RotatedKsMatrix {
+    /// Rotated KS matrix rows per automorphism index
     pub rotations: Vec<Vec<RlweCiphertext>>,
+    /// Number of items to pack
     pub num_to_pack: usize,
+    /// Gadget decomposition parameters
     pub gadget: GadgetVector,
 }
 
 impl RotatedKsMatrix {
+    /// Generate rotated KS matrices from a base KS matrix and generator powers
     pub fn generate(
         k_g: &crate::ks::KeySwitchingMatrix,
         gen_pows: &GeneratorPowers,
@@ -1483,6 +1493,7 @@ impl RotatedKsMatrix {
         }
     }
 
+    /// Get the rotated KS matrix rows at index i
     pub fn get_rotation(&self, i: usize) -> &[RlweCiphertext] {
         &self.rotations[i]
     }

@@ -135,7 +135,7 @@ pub enum InspireVariant {
 pub struct InspireParams {
     /// Ring dimension d (power of two).
     ///
-    /// Determines the polynomial ring R_q = Z_q[X]/(X^d + 1).
+    /// Determines the polynomial ring R_q = Z_q\[X\]/(X^d + 1).
     /// Larger values provide more noise margin but increase computation.
     /// Typical values: 2048, 4096.
     pub ring_dim: usize,

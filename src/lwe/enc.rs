@@ -40,16 +40,16 @@ impl LweSecretKey {
     /// the resulting LWE ciphertext is encrypted under an LWE secret key
     /// whose coefficients are derived from the RLWE secret polynomial.
     ///
-    /// In R_q = Z_q[X]/(X^d + 1), the constant term of a(X)·s(X) is:
+    /// In R_q = Z_q\[X\]/(X^d + 1), the constant term of a(X)·s(X) is:
     ///   coeff_0(a(X)·s(X)) = a_0·s_0 - Σ_{i=1}^{d-1} a_i·s_{d-i}
     ///
     /// The sample_extract_coeff0() produces:
-    ///   a_lwe[0] = a_0,
-    ///   a_lwe[i] = a_{d-i} for i > 0
+    ///   a_lwe\[0\] = a_0,
+    ///   a_lwe\[i\] = a_{d-i} for i > 0
     ///
     /// For <a_lwe, s_lwe> = coeff_0(a(X)·s(X)), we need:
-    ///   s_lwe[0] = s[0],
-    ///   s_lwe[i] = -s[i] for i > 0
+    ///   s_lwe\[0\] = s\[0\],
+    ///   s_lwe\[i\] = -s\[i\] for i > 0
     pub fn from_rlwe(rlwe_sk: &crate::rlwe::RlweSecretKey) -> Self {
         let d = rlwe_sk.ring_dim();
         let q = rlwe_sk.modulus();

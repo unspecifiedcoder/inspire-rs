@@ -198,8 +198,8 @@ impl RlweCiphertext {
 
         let mut a_vec = vec![0u64; d];
         a_vec[0] = self.a.coeff(0);
-        for (i, a_val) in a_vec.iter_mut().enumerate().take(d).skip(1) {
-            *a_val = self.a.coeff(d - i);
+        for (i, a) in a_vec.iter_mut().enumerate().take(d).skip(1) {
+            *a = self.a.coeff(d - i);
         }
 
         let b0 = self.b.coeff(0);
@@ -256,10 +256,10 @@ mod tests {
         let decrypted = ct.decrypt(&sk, delta, params.p, &ctx);
 
         // Verify
-        for (i, &expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
+        for (i, expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
             assert_eq!(
                 decrypted.coeff(i),
-                expected,
+                *expected,
                 "Mismatch at coefficient {}",
                 i
             );
@@ -390,8 +390,8 @@ mod tests {
         let ct_scaled = ct.scalar_mul(scalar);
         let decrypted = ct_scaled.decrypt(&sk, delta, params.p, &ctx);
 
-        for (i, &msg_coeff) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
-            let expected = (msg_coeff * scalar) % params.p;
+        for (i, msg_coeff) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
+            let expected = (*msg_coeff * scalar) % params.p;
             assert_eq!(
                 decrypted.coeff(i),
                 expected,
@@ -439,10 +439,10 @@ mod tests {
         let ct = RlweCiphertext::encrypt_with_crs(&sk, &message, delta, &crs_a, &error, &ctx);
         let decrypted = ct.decrypt(&sk, delta, params.p, &ctx);
 
-        for (i, &expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
+        for (i, expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
             assert_eq!(
                 decrypted.coeff(i),
-                expected,
+                *expected,
                 "Mismatch at coefficient {}",
                 i
             );

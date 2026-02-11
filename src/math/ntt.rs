@@ -1,7 +1,7 @@
 //! Number-Theoretic Transform (NTT) for fast polynomial multiplication.
 //!
 //! Implements Cooley-Tukey radix-2 NTT for negacyclic convolution over
-//! R_q = Z_q[X]/(X^d + 1). The NTT enables O(n log n) polynomial multiplication
+//! R_q = Z_q\[X\]/(X^d + 1). The NTT enables O(n log n) polynomial multiplication
 //! instead of O(n²) naive multiplication.
 //!
 //! # Theory

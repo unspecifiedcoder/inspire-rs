@@ -148,13 +148,27 @@ impl StorageEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateFormatError {
     /// Header is too short
-    HeaderTooShort { actual: usize },
+    HeaderTooShort {
+        /// Number of bytes actually provided
+        actual: usize,
+    },
     /// Invalid magic bytes
-    InvalidMagic { actual: [u8; 4] },
+    InvalidMagic {
+        /// Magic bytes found in the file
+        actual: [u8; 4],
+    },
     /// Entry is too short
-    EntryTooShort { actual: usize },
+    EntryTooShort {
+        /// Number of bytes actually provided
+        actual: usize,
+    },
     /// File size doesn't match header
-    SizeMismatch { expected: u64, actual: u64 },
+    SizeMismatch {
+        /// Expected file size in bytes
+        expected: u64,
+        /// Actual file size in bytes
+        actual: u64,
+    },
 }
 
 impl core::fmt::Display for StateFormatError {

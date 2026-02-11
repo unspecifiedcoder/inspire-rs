@@ -65,7 +65,7 @@ pub fn encode_direct(values: &[u64], d: usize, q: u64, moduli: &[u64]) -> Poly {
 
 /// Create inverse monomial X^(-k) mod (X^d + 1)
 ///
-/// In R_q = Z_q[X]/(X^d + 1), we have X^d = -1, so:
+/// In R_q = Z_q\[X\]/(X^d + 1), we have X^d = -1, so:
 /// - X^(-k) = X^(2d-k) mod (X^d + 1)
 /// - For k > 0: X^(2d-k) = X^(d + (d-k)) = -X^(d-k)
 /// - For k = 0: X^0 = 1
@@ -136,14 +136,14 @@ pub fn encode_database(
         for poly_idx in 0..num_polys {
             let mut column = vec![0u64; entries_per_shard];
 
-            for (local_idx, col_entry) in column.iter_mut().enumerate().take(actual_entries) {
+            for (local_idx, col) in column.iter_mut().enumerate().take(actual_entries) {
                 let global_entry_idx = entry_offset + local_idx;
                 let entry_start = global_entry_idx * entry_size;
                 let entry_end = entry_start + entry_size;
 
                 if entry_end <= database.len() {
                     let entry_bytes = &database[entry_start..entry_end];
-                    *col_entry = extract_column_value(entry_bytes, poly_idx);
+                    *col = extract_column_value(entry_bytes, poly_idx);
                 }
             }
 

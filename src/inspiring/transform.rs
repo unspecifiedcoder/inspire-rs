@@ -63,9 +63,12 @@ pub fn transform_partial(
     let q = params.q;
     let moduli = params.moduli();
 
-    debug_assert!(gamma <= d / 2, "gamma must be ≤ d/2 for partial packing");
     debug_assert_eq!(lwe.a.len(), d, "LWE dimension must match ring dimension");
     debug_assert_eq!(lwe.q, q, "LWE modulus must match params");
+    assert!(
+        gamma > 0 && gamma <= d / 2,
+        "gamma must be in the range 1..=ring_dim/2 for partial packing"
+    );
 
     // For partial packing, we only need to handle γ positions
     // The transformation is similar but optimized for fewer ciphertexts
@@ -274,6 +277,24 @@ mod tests {
 
         assert_eq!(intermediate.dimension(), gamma);
         assert_eq!(intermediate.ring_dim(), params.ring_dim);
+    }
+
+    #[test]
+    #[should_panic(expected = "gamma must be in the range 1..=ring_dim/2")]
+    fn test_transform_partial_rejects_zero_gamma() {
+        let params = test_params();
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(12345);
+        let lwe = random_lwe(&mut rng, &params);
+        let _ = transform_partial(0, &lwe, &params);
+    }
+
+    #[test]
+    #[should_panic(expected = "gamma must be in the range 1..=ring_dim/2")]
+    fn test_transform_partial_rejects_gamma_above_half_dimension() {
+        let params = test_params();
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(12345);
+        let lwe = random_lwe(&mut rng, &params);
+        let _ = transform_partial(params.ring_dim / 2 + 1, &lwe, &params);
     }
 
     #[test]

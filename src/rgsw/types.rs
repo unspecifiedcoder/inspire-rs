@@ -143,17 +143,11 @@ impl RgswCiphertext {
 
         let mut rows = Vec::with_capacity(2 * ell);
         let powers = gadget.powers();
-        assert!(
-            powers.len() >= ell,
-            "gadget powers must have at least {} entries, got {}",
-            ell,
-            powers.len()
-        );
 
         // First ℓ rows: RLWE(0) + (m·z^i, 0)
         // Row i = (a + m·z^i, b) where (a, b) encrypts 0
         // Decrypts to: (a + m·z^i)·s + b = a·s + b + m·z^i·s ≈ m·z^i·s
-        for &power in &powers[..ell] {
+        for power in powers.iter().take(ell) {
             let a_rand = Poly::random_moduli(d, moduli);
             let error = sample_error_poly(d, moduli, sampler);
 
@@ -162,7 +156,7 @@ impl RgswCiphertext {
             let b = &(-a_s) + &error;
 
             // Add m·z^i to the 'a' component
-            let scaled_msg = message.scalar_mul(power);
+            let scaled_msg = message.scalar_mul(*power);
             let a = &a_rand + &scaled_msg;
 
             rows.push(RlweCiphertext::from_parts(a, b));
@@ -171,7 +165,7 @@ impl RgswCiphertext {
         // Next ℓ rows: RLWE(0) + (0, m·z^i)
         // Row ℓ+i = (a, b + m·z^i) where (a, b) encrypts 0
         // Decrypts to: a·s + b + m·z^i ≈ m·z^i
-        for &power in &powers[..ell] {
+        for power in powers.iter().take(ell) {
             let a = Poly::random_moduli(d, moduli);
             let error = sample_error_poly(d, moduli, sampler);
 
@@ -180,7 +174,7 @@ impl RgswCiphertext {
             let b_base = &(-a_s) + &error;
 
             // Add m·z^i to the 'b' component
-            let scaled_msg = message.scalar_mul(power);
+            let scaled_msg = message.scalar_mul(*power);
             let b = &b_base + &scaled_msg;
 
             rows.push(RlweCiphertext::from_parts(a, b));
@@ -252,12 +246,6 @@ impl SeededRgswCiphertext {
         let mut rows = Vec::with_capacity(2 * ell);
         let powers = gadget.powers();
         let mut rng = rand::thread_rng();
-        assert!(
-            powers.len() >= ell,
-            "gadget powers must have at least {} entries, got {}",
-            ell,
-            powers.len()
-        );
 
         // First ℓ rows: RLWE(0) + (m·z^i, 0)
         // Original: (a_rand + m·z^i, b) where b = -a_rand·s + e
@@ -266,7 +254,7 @@ impl SeededRgswCiphertext {
         // Seeded: we store (seed, b_adjusted), expand gives (a_rand, b_adjusted)
         // For equivalent decrypt: a_rand·s + b_adjusted = m·z^i·s + e
         // Therefore: b_adjusted = b + m·z^i·s
-        for &power in &powers[..ell] {
+        for power in powers.iter().take(ell) {
             let mut seed = [0u8; 32];
             rng.fill_bytes(&mut seed);
 
@@ -279,7 +267,7 @@ impl SeededRgswCiphertext {
 
             // Adjust b to compensate for missing m·z^i in a component
             // b_adjusted = b + (m·z^i)·s so that decrypt gives m·z^i·s + e
-            let scaled_msg = message.scalar_mul(power);
+            let scaled_msg = message.scalar_mul(*power);
             let msg_s = scaled_msg.mul_ntt(&sk.poly, ctx);
             let b_adjusted = &b + &msg_s;
 
@@ -287,7 +275,7 @@ impl SeededRgswCiphertext {
         }
 
         // Next ℓ rows: RLWE(0) + (0, m·z^i)
-        for &power in &powers[..ell] {
+        for power in powers.iter().take(ell) {
             let mut seed = [0u8; 32];
             rng.fill_bytes(&mut seed);
 
@@ -299,7 +287,7 @@ impl SeededRgswCiphertext {
             let b_base = &(-a_s) + &error;
 
             // Add m·z^i to the 'b' component
-            let scaled_msg = message.scalar_mul(power);
+            let scaled_msg = message.scalar_mul(*power);
             let b = &b_base + &scaled_msg;
 
             rows.push(SeededRlweCiphertext::new(seed, b));

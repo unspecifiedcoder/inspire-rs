@@ -14,7 +14,7 @@ use super::setup::KeySwitchingMatrix;
 /// # Algorithm
 ///
 /// 1. Decompose a using gadget: g⁻¹(a) = [a₀, a₁, ..., a_{ℓ-1}]
-/// 2. Compute: (a', b') = (0, b) + Σᵢ aᵢ · K[i]
+/// 2. Compute: (a', b') = (0, b) + Σᵢ aᵢ · K\[i\]
 ///
 /// The result satisfies: a'·s' + b' ≈ a·s + b (the same decrypted message)
 ///
@@ -37,25 +37,13 @@ pub fn key_switch(
 
     // Decompose the 'a' component
     let a_decomp = gadget_decompose(&ct.a, gadget);
-    assert!(
-        ks_matrix.rows.len() >= ell,
-        "key switching matrix has {} rows but gadget length is {}",
-        ks_matrix.rows.len(),
-        ell
-    );
-    assert!(
-        a_decomp.len() >= ell,
-        "gadget decomposition has {} parts but gadget length is {}",
-        a_decomp.len(),
-        ell
-    );
 
     // Initialize result: (0, b)
     let mut result_a = Poly::zero_moduli(d, moduli);
     let mut result_b = ct.b.clone();
 
     // Accumulate: Σᵢ aᵢ · K[i]
-    for (a_decomp_i, ks_row) in a_decomp[..ell].iter().zip(ks_matrix.rows[..ell].iter()) {
+    for (a_decomp_i, ks_row) in a_decomp.iter().zip(ks_matrix.rows.iter()).take(ell) {
         // aᵢ · K[i].a
         let term_a = a_decomp_i.mul_ntt(&ks_row.a, ctx);
         result_a += term_a;
@@ -94,18 +82,6 @@ pub fn key_switch_ntt(
             p
         })
         .collect();
-    assert!(
-        ks_matrix.rows.len() >= ell,
-        "key switching matrix has {} rows but gadget length is {}",
-        ks_matrix.rows.len(),
-        ell
-    );
-    assert!(
-        a_decomp_ntt.len() >= ell,
-        "gadget decomposition has {} parts but gadget length is {}",
-        a_decomp_ntt.len(),
-        ell
-    );
 
     // Initialize result: (0, b)
     let mut result_a = Poly::zero_moduli(d, moduli);
@@ -115,7 +91,7 @@ pub fn key_switch_ntt(
     result_b.to_ntt(ctx);
 
     // Accumulate in NTT domain
-    for (a_decomp_ntt_i, ks_row) in a_decomp_ntt[..ell].iter().zip(ks_matrix.rows[..ell].iter()) {
+    for (a_decomp_ntt_i, ks_row) in a_decomp_ntt.iter().zip(ks_matrix.rows.iter()).take(ell) {
         // Convert KS row to NTT if needed
         let mut ks_a = ks_row.a.clone();
         let mut ks_b = ks_row.b.clone();
@@ -185,10 +161,10 @@ mod tests {
 
         // Verify original decryption under sk1
         let dec1 = ct1.decrypt(&sk1, delta, params.p, &ctx);
-        for (i, &expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
+        for (i, expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
             assert_eq!(
                 dec1.coeff(i),
-                expected,
+                *expected,
                 "Original decryption failed at {}",
                 i
             );
@@ -199,10 +175,10 @@ mod tests {
 
         // Verify decryption under sk2
         let dec2 = ct2.decrypt(&sk2, delta, params.p, &ctx);
-        for (i, &expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
+        for (i, expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
             assert_eq!(
                 dec2.coeff(i),
-                expected,
+                *expected,
                 "Key-switched decryption failed at coefficient {}",
                 i
             );
@@ -265,10 +241,10 @@ mod tests {
         // Should still decrypt correctly
         let decrypted = ct_switched.decrypt(&sk, delta, params.p, &ctx);
 
-        for (i, &expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
+        for (i, expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
             assert_eq!(
                 decrypted.coeff(i),
-                expected,
+                *expected,
                 "Mismatch at coefficient {}",
                 i
             );
@@ -303,9 +279,9 @@ mod tests {
         let dec_basic = ct_basic.decrypt(&sk2, delta, params.p, &ctx);
         let dec_ntt = ct_ntt.decrypt(&sk2, delta, params.p, &ctx);
 
-        for (i, &expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
-            assert_eq!(dec_basic.coeff(i), expected);
-            assert_eq!(dec_ntt.coeff(i), expected);
+        for (i, expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
+            assert_eq!(dec_basic.coeff(i), *expected);
+            assert_eq!(dec_ntt.coeff(i), *expected);
         }
     }
 

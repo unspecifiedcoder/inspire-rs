@@ -229,7 +229,7 @@ async fn get_params(server: &str) -> Result<()> {
 
 async fn query_by_index(
     server: &str,
-    sk_path: &Path,
+    sk_path: &PathBuf,
     index: u64,
     variant: VariantChoice,
     packing_mode: PackingModeChoice,
@@ -328,7 +328,7 @@ async fn query_by_index(
 
 async fn query_storage(
     server: &str,
-    sk_path: &Path,
+    sk_path: &PathBuf,
     state_path: &Path,
     address: &str,
     slot: &str,
@@ -375,17 +375,16 @@ async fn query_storage(
 
 async fn batch_query(
     server: &str,
-    sk_path: &Path,
-    file: &Path,
+    sk_path: &PathBuf,
+    file: &PathBuf,
     variant: VariantChoice,
     packing_mode: PackingModeChoice,
 ) -> Result<()> {
     info!("Loading secret key...");
     let secret_key = load_secret_key(sk_path)?;
 
-    let batch_file = File::open(file)
-        .with_context(|| format!("Failed to open batch file: {}", file.display()))?;
-    let reader = BufReader::new(batch_file);
+    let file = File::open(file).with_context(|| "Failed to open batch file".to_string())?;
+    let reader = BufReader::new(file);
 
     let indices: Vec<u64> = reader
         .lines()
@@ -515,7 +514,7 @@ async fn fetch_params(server: &str) -> Result<ParamsResponse> {
     Ok(params)
 }
 
-fn load_secret_key(path: &Path) -> Result<RlweSecretKey> {
+fn load_secret_key(path: &PathBuf) -> Result<RlweSecretKey> {
     let file = File::open(path)
         .with_context(|| format!("Failed to open secret key file: {}", path.display()))?;
     let reader = BufReader::new(file);

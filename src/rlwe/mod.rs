@@ -1,6 +1,6 @@
 //! RLWE (Ring Learning With Errors) encryption module
 //!
-//! This module implements RLWE encryption over the ring R_q = Z_q[X]/(X^d + 1).
+//! This module implements RLWE encryption over the ring R_q = Z_q\[X\]/(X^d + 1).
 //!
 //! # Overview
 //!

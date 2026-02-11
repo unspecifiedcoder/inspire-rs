@@ -55,7 +55,6 @@ pub fn collapse(
     }
 
     // Final collapse using K_h to get standard RLWE
-
     final_collapse(&current, k_h, h, &ctx, params)
 }
 

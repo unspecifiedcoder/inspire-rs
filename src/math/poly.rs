@@ -1,11 +1,11 @@
-//! Polynomial operations over R_q = Z_q[X]/(X^d + 1).
+//! Polynomial operations over R_q = Z_q\[X\]/(X^d + 1).
 //!
 //! Provides polynomial arithmetic using NTT for efficient multiplication.
 //! Polynomials can exist in either coefficient domain or NTT domain.
 //!
 //! # Overview
 //!
-//! The polynomial ring R_q = Z_q[X]/(X^d + 1) is fundamental to lattice-based
+//! The polynomial ring R_q = Z_q\[X\]/(X^d + 1) is fundamental to lattice-based
 //! cryptography. This module provides:
 //!
 //! - Basic arithmetic: addition, subtraction, negation, scalar multiplication
@@ -38,7 +38,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-/// Polynomial in R_q = Z_q[X]/(X^d + 1).
+/// Polynomial in R_q = Z_q\[X\]/(X^d + 1).
 ///
 /// Represents a polynomial with coefficients in Z_q, reduced modulo X^d + 1.
 /// Polynomials can be in coefficient domain or NTT domain for efficient
@@ -166,7 +166,7 @@ impl Poly {
         let (moduli_vec, q, inv) = Self::init_moduli(moduli);
         let crt_count = moduli_vec.len();
         assert!(
-            coeffs.len() % crt_count == 0,
+            coeffs.len().is_multiple_of(crt_count),
             "CRT coeffs length must be a multiple of crt_count"
         );
         let dim = coeffs.len() / crt_count;
@@ -718,8 +718,8 @@ impl Add for &Poly {
         for (m, &modulus) in self.moduli.iter().enumerate() {
             let start = m * self.dim;
             let end = start + self.dim;
-            for (c, &o) in coeffs[start..end].iter_mut().zip(&rhs.coeffs[start..end]) {
-                let sum = *c + o;
+            for (c, &r) in coeffs[start..end].iter_mut().zip(&rhs.coeffs[start..end]) {
+                let sum = *c + r;
                 *c = if sum >= modulus { sum - modulus } else { sum };
             }
         }

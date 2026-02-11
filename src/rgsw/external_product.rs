@@ -26,9 +26,9 @@ pub fn gadget_decompose(poly: &Poly, gadget: &GadgetVector) -> Vec<Poly> {
     for j in 0..d {
         let mut val = poly.coeff(j);
 
-        for result_poly in &mut result {
+        for item in result.iter_mut().take(ell) {
             let digit = val % base;
-            result_poly.set_coeff(j, digit);
+            item.set_coeff(j, digit);
             val /= base;
         }
     }
@@ -82,7 +82,7 @@ pub fn gadget_reconstruct(decomposed: &[Poly], gadget: &GadgetVector) -> Poly {
 ///
 /// Given RLWE ciphertext (a, b) and RGSW ciphertext C:
 /// 1. Decompose a and b using gadget inverse: g⁻¹(a), g⁻¹(b)
-/// 2. Compute: (a', b') = Σᵢ [g⁻¹(a)ᵢ · C[i] + g⁻¹(b)ᵢ · C[ℓ+i]]
+/// 2. Compute: (a', b') = Σᵢ \[g⁻¹(a)ᵢ · C\[i\] + g⁻¹(b)ᵢ · C\[ℓ+i\]\]
 ///
 /// The result decrypts to m₀·m₁ with controlled noise growth.
 pub fn external_product(
@@ -279,10 +279,10 @@ mod tests {
         let result = external_product(&rlwe, &rgsw_one, &ctx);
         let decrypted = result.decrypt(&sk, delta, params.p, &ctx);
 
-        for (i, &expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
+        for (i, expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
             assert_eq!(
                 decrypted.coeff(i),
-                expected,
+                *expected,
                 "Mismatch at coefficient {}",
                 i
             );
@@ -315,8 +315,8 @@ mod tests {
         let result = external_product(&rlwe, &rgsw_scalar, &ctx);
         let decrypted = result.decrypt(&sk, delta, params.p, &ctx);
 
-        for (i, &msg_coeff) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
-            let expected = (msg_coeff * scalar) % params.p;
+        for (i, msg_coeff) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
+            let expected = (*msg_coeff * scalar) % params.p;
             assert_eq!(
                 decrypted.coeff(i),
                 expected,
