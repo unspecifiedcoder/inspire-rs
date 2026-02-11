@@ -19,16 +19,26 @@ fn bench_query_size_and_latency(c: &mut Criterion) {
         .collect();
 
     let mut sampler = GaussianSampler::new(params.sigma);
-    let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler)
-        .expect("setup should succeed");
+    let (crs, encoded_db, rlwe_sk) =
+        setup(&params, &database, entry_size, &mut sampler).expect("setup should succeed");
 
     let target_index = 42u64;
-    let (state_full, full_query) =
-        query(&crs, target_index, &encoded_db.config, &rlwe_sk, &mut sampler)
-            .expect("query should succeed");
-    let (state_seeded, seeded_query) =
-        query_seeded(&crs, target_index, &encoded_db.config, &rlwe_sk, &mut sampler)
-            .expect("seeded query should succeed");
+    let (state_full, full_query) = query(
+        &crs,
+        target_index,
+        &encoded_db.config,
+        &rlwe_sk,
+        &mut sampler,
+    )
+    .expect("query should succeed");
+    let (state_seeded, seeded_query) = query_seeded(
+        &crs,
+        target_index,
+        &encoded_db.config,
+        &rlwe_sk,
+        &mut sampler,
+    )
+    .expect("seeded query should succeed");
 
     let mut full_query_tree = full_query.clone();
     full_query_tree.packing_mode = PackingMode::Tree;
@@ -148,8 +158,8 @@ fn bench_query_size_and_latency(c: &mut Criterion) {
 
     group.bench_function("respond_inspiring_full", |b| {
         b.iter(|| {
-            let response = respond_inspiring(&crs, &encoded_db, &full_query)
-                .expect("respond_inspiring");
+            let response =
+                respond_inspiring(&crs, &encoded_db, &full_query).expect("respond_inspiring");
             black_box(response);
         });
     });
@@ -178,10 +188,10 @@ fn bench_query_size_and_latency(c: &mut Criterion) {
         });
     });
 
-    let inspiring_response = respond_inspiring(&crs, &encoded_db, &full_query)
-        .expect("respond_inspiring");
-    let tree_response = respond_one_packing(&crs, &encoded_db, &full_query_tree)
-        .expect("respond_one_packing");
+    let inspiring_response =
+        respond_inspiring(&crs, &encoded_db, &full_query).expect("respond_inspiring");
+    let tree_response =
+        respond_one_packing(&crs, &encoded_db, &full_query_tree).expect("respond_one_packing");
 
     group.bench_function("extract_inspiring", |b| {
         b.iter(|| {

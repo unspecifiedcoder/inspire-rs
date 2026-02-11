@@ -22,8 +22,8 @@ use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use inspire::pir::{
-    respond_inspiring, respond_mmap_one_packing, respond_one_packing, respond_seeded_inspiring,
-    respond_seeded_packed, respond_mmap_inspiring, ClientQuery, EncodedDatabase, InspireCrs,
+    respond_inspiring, respond_mmap_inspiring, respond_mmap_one_packing, respond_one_packing,
+    respond_seeded_inspiring, respond_seeded_packed, ClientQuery, EncodedDatabase, InspireCrs,
     MmapDatabase, PackingMode, SeededClientQuery, ServerResponse,
 };
 

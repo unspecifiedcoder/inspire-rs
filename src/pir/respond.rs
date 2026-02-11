@@ -134,19 +134,17 @@ pub fn respond_with_variant(
 ) -> Result<ServerResponse> {
     match variant {
         InspireVariant::NoPacking => respond(crs, encoded_db, query),
-        InspireVariant::OnePacking | InspireVariant::TwoPacking => {
-            match query.packing_mode {
-                PackingMode::Inspiring => {
-                    if query.inspiring_packing_keys.is_none() {
-                        return Err(pir_err!(
+        InspireVariant::OnePacking | InspireVariant::TwoPacking => match query.packing_mode {
+            PackingMode::Inspiring => {
+                if query.inspiring_packing_keys.is_none() {
+                    return Err(pir_err!(
                             "InspiRING packing keys missing (set packing_mode=tree to use tree packing)"
                         ));
-                    }
-                    respond_inspiring(crs, encoded_db, query)
                 }
-                PackingMode::Tree => respond_one_packing(crs, encoded_db, query),
+                respond_inspiring(crs, encoded_db, query)
             }
-        }
+            PackingMode::Tree => respond_one_packing(crs, encoded_db, query),
+        },
     }
 }
 
@@ -166,19 +164,17 @@ pub fn respond_seeded_with_variant(
 ) -> Result<ServerResponse> {
     match variant {
         InspireVariant::NoPacking => respond_seeded(crs, encoded_db, query),
-        InspireVariant::OnePacking | InspireVariant::TwoPacking => {
-            match query.packing_mode {
-                PackingMode::Inspiring => {
-                    if query.inspiring_packing_keys.is_none() {
-                        return Err(pir_err!(
+        InspireVariant::OnePacking | InspireVariant::TwoPacking => match query.packing_mode {
+            PackingMode::Inspiring => {
+                if query.inspiring_packing_keys.is_none() {
+                    return Err(pir_err!(
                             "InspiRING packing keys missing (set packing_mode=tree to use tree packing)"
                         ));
-                    }
-                    respond_seeded_inspiring(crs, encoded_db, query)
                 }
-                PackingMode::Tree => respond_seeded_packed(crs, encoded_db, query),
+                respond_seeded_inspiring(crs, encoded_db, query)
             }
-        }
+            PackingMode::Tree => respond_seeded_packed(crs, encoded_db, query),
+        },
     }
 }
 
@@ -368,7 +364,10 @@ pub fn respond_inspiring(
                 "InspiRING packing keys invalid: y_all and y_body are both empty"
             ));
         }
-        Some(generate_rotations(&pack_params, &client_packing_keys.y_body))
+        Some(generate_rotations(
+            &pack_params,
+            &client_packing_keys.y_body,
+        ))
     } else {
         None
     };
@@ -659,7 +658,10 @@ pub fn respond_mmap_inspiring(
                 "InspiRING packing keys invalid: y_all and y_body are both empty"
             ));
         }
-        Some(generate_rotations(&pack_params, &client_packing_keys.y_body))
+        Some(generate_rotations(
+            &pack_params,
+            &client_packing_keys.y_body,
+        ))
     } else {
         None
     };
@@ -864,10 +866,8 @@ mod tests {
 
         let response_inmem = respond_inspiring(&crs, &encoded_db, &client_query).unwrap();
         let response_mmap = respond_mmap_inspiring(&crs, &mmap_db, &client_query).unwrap();
-        let extracted_inmem =
-            extract_inspiring(&crs, &state, &response_inmem, entry_size).unwrap();
-        let extracted_mmap =
-            extract_inspiring(&crs, &state, &response_mmap, entry_size).unwrap();
+        let extracted_inmem = extract_inspiring(&crs, &state, &response_inmem, entry_size).unwrap();
+        let extracted_mmap = extract_inspiring(&crs, &state, &response_mmap, entry_size).unwrap();
 
         let expected_start = (target_index as usize) * entry_size;
         let expected = &database[expected_start..expected_start + entry_size];
