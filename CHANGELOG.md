@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No substantive changes since v0.1.2. The single post-release commit (68214e0) updated README badges, which is a metadata-only change not tracked here per Keep a Changelog conventions._
+_No substantive unreleased changes._
 
 ## [0.1.2] - 2026-01-12
 
