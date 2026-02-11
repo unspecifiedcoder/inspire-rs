@@ -166,7 +166,7 @@ impl Poly {
         let (moduli_vec, q, inv) = Self::init_moduli(moduli);
         let crt_count = moduli_vec.len();
         assert!(
-            coeffs.len() % crt_count == 0,
+            coeffs.len().is_multiple_of(crt_count),
             "CRT coeffs length must be a multiple of crt_count"
         );
         let dim = coeffs.len() / crt_count;
@@ -571,9 +571,9 @@ impl Poly {
         for (m, &modulus) in self.moduli.iter().enumerate() {
             let start = m * self.dim;
             let end = start + self.dim;
-            for i in start..end {
-                let sum = coeffs[i] + other.coeffs[i];
-                coeffs[i] = if sum >= modulus { sum - modulus } else { sum };
+            for (c, &o) in coeffs[start..end].iter_mut().zip(&other.coeffs[start..end]) {
+                let sum = *c + o;
+                *c = if sum >= modulus { sum - modulus } else { sum };
             }
         }
 
@@ -718,9 +718,9 @@ impl Add for &Poly {
         for (m, &modulus) in self.moduli.iter().enumerate() {
             let start = m * self.dim;
             let end = start + self.dim;
-            for i in start..end {
-                let sum = coeffs[i] + rhs.coeffs[i];
-                coeffs[i] = if sum >= modulus { sum - modulus } else { sum };
+            for (c, &r) in coeffs[start..end].iter_mut().zip(&rhs.coeffs[start..end]) {
+                let sum = *c + r;
+                *c = if sum >= modulus { sum - modulus } else { sum };
             }
         }
 
@@ -766,10 +766,9 @@ impl Sub for &Poly {
         for (m, &modulus) in self.moduli.iter().enumerate() {
             let start = m * self.dim;
             let end = start + self.dim;
-            for i in start..end {
-                let a = coeffs[i];
-                let b = rhs.coeffs[i];
-                coeffs[i] = if a >= b { a - b } else { modulus - b + a };
+            for (c, &b) in coeffs[start..end].iter_mut().zip(&rhs.coeffs[start..end]) {
+                let a = *c;
+                *c = if a >= b { a - b } else { modulus - b + a };
             }
         }
 

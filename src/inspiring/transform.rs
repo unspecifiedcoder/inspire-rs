@@ -63,9 +63,12 @@ pub fn transform_partial(
     let q = params.q;
     let moduli = params.moduli();
 
-    debug_assert!(gamma <= d / 2, "gamma must be ≤ d/2 for partial packing");
     debug_assert_eq!(lwe.a.len(), d, "LWE dimension must match ring dimension");
     debug_assert_eq!(lwe.q, q, "LWE modulus must match params");
+    assert!(
+        gamma > 0 && gamma <= d / 2,
+        "gamma must be in the range 1..=ring_dim/2 for partial packing"
+    );
 
     // For partial packing, we only need to handle γ positions
     // The transformation is similar but optimized for fewer ciphertexts
@@ -80,11 +83,11 @@ pub fn transform_partial(
     for j in 0..gamma {
         // Group coefficients: a_polys[j] aggregates coefficients [j*group_size, (j+1)*group_size)
         let mut coeffs = vec![0u64; d];
-        for k in 0..group_size {
+        for (k, coeff) in coeffs.iter_mut().enumerate().take(group_size) {
             let idx = j * group_size + k;
             if idx < lwe.a.len() {
                 // Place coefficient at position k in the polynomial
-                coeffs[k] = lwe.a[idx];
+                *coeff = lwe.a[idx];
             }
         }
         a_polys.push(Poly::from_coeffs_moduli(coeffs, moduli));
@@ -277,6 +280,24 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "gamma must be in the range 1..=ring_dim/2")]
+    fn test_transform_partial_rejects_zero_gamma() {
+        let params = test_params();
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(12345);
+        let lwe = random_lwe(&mut rng, &params);
+        let _ = transform_partial(0, &lwe, &params);
+    }
+
+    #[test]
+    #[should_panic(expected = "gamma must be in the range 1..=ring_dim/2")]
+    fn test_transform_partial_rejects_gamma_above_half_dimension() {
+        let params = test_params();
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(12345);
+        let lwe = random_lwe(&mut rng, &params);
+        let _ = transform_partial(params.ring_dim / 2 + 1, &lwe, &params);
+    }
+
+    #[test]
     fn test_mul_by_monomial_identity() {
         let params = test_params();
         let coeffs: Vec<u64> = (0..params.ring_dim as u64).collect();
@@ -329,7 +350,7 @@ mod tests {
         let lwe = random_lwe(&mut rng, &params);
 
         let intermediate = transform(&lwe, &params);
-        let aggregated = aggregate(&[intermediate.clone()], &params);
+        let aggregated = aggregate(std::slice::from_ref(&intermediate), &params);
 
         // Single ciphertext: aggregated should match intermediate
         assert_eq!(aggregated.dimension(), intermediate.dimension());

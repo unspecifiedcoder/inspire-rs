@@ -130,20 +130,20 @@ pub fn encode_database(
     while entry_offset < total_entries {
         let actual_entries = std::cmp::min(entries_per_shard, total_entries - entry_offset);
 
-        let num_polys = (entry_size * 8 + 15) / 16;
+        let num_polys = (entry_size * 8).div_ceil(16);
         let mut polynomials = Vec::with_capacity(num_polys);
 
         for poly_idx in 0..num_polys {
             let mut column = vec![0u64; entries_per_shard];
 
-            for local_idx in 0..actual_entries {
+            for (local_idx, col) in column.iter_mut().enumerate().take(actual_entries) {
                 let global_entry_idx = entry_offset + local_idx;
                 let entry_start = global_entry_idx * entry_size;
                 let entry_end = entry_start + entry_size;
 
                 if entry_end <= database.len() {
                     let entry_bytes = &database[entry_start..entry_end];
-                    column[local_idx] = extract_column_value(entry_bytes, poly_idx);
+                    *col = extract_column_value(entry_bytes, poly_idx);
                 }
             }
 
@@ -352,11 +352,10 @@ mod tests {
         let values: Vec<u64> = (0..d).map(|i| (i + 1) as u64).collect();
         let h = encode_direct(&values, d, q, &moduli);
 
-        for k in 0..16 {
+        for (k, &expected) in values.iter().enumerate().take(16) {
             let inv_mono = inverse_monomial(k, d, q, &moduli);
             let rotated = h.mul_ntt(&inv_mono, &ctx);
 
-            let expected = values[k];
             assert_eq!(
                 rotated.coeff(0),
                 expected,
@@ -370,8 +369,8 @@ mod tests {
     #[test]
     fn test_extract_reconstruct_entry() {
         let entry: Vec<u8> = (0..32).collect();
-        let entry_size = 32;
-        let num_cols = (entry_size * 8 + 15) / 16;
+        let entry_size: usize = 32;
+        let num_cols = (entry_size * 8).div_ceil(16);
 
         let mut column_values = Vec::new();
         for col_idx in 0..num_cols {

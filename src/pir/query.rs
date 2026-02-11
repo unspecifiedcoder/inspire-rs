@@ -22,19 +22,14 @@ use super::error::Result;
 use super::setup::ServerCrs;
 
 /// Packing algorithm selection for server responses.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PackingMode {
     /// Default: require InspiRING packing keys (fast path).
+    #[default]
     Inspiring,
     /// Explicitly request tree packing (slower, log(d) matrices).
     Tree,
-}
-
-impl Default for PackingMode {
-    fn default() -> Self {
-        PackingMode::Inspiring
-    }
 }
 
 /// Build a seeded query using a specific gadget vector.

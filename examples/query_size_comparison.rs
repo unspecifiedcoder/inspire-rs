@@ -52,10 +52,10 @@ fn main() {
 
     // Response sizes
     let rlwe_size = 2 * d * 8; // 2 polynomials of d coefficients
-    let entry_size = 32; // 32-byte Ethereum entry
+    let entry_size: usize = 32; // 32-byte Ethereum entry
     let p = params.p;
     let bits_per_coeff = (p as f64).log2() as usize;
-    let num_columns = (entry_size * 8 + bits_per_coeff - 1) / bits_per_coeff;
+    let num_columns = (entry_size * 8).div_ceil(bits_per_coeff);
 
     println!("Response (RLWE ciphertexts):");
     println!(

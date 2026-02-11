@@ -161,7 +161,7 @@ impl ModQ {
     ///
     /// The value in standard representation (0 to q-1).
     pub fn value(&self) -> u64 {
-        self.from_montgomery(self.value)
+        self.montgomery_reduce(self.value)
     }
 
     /// Returns the modulus q.
@@ -190,12 +190,12 @@ impl ModQ {
     }
 
     /// Convert to Montgomery form: a -> a * R mod q
-    fn to_montgomery(&self, a: u64) -> u64 {
+    fn to_montgomery(self, a: u64) -> u64 {
         self.montgomery_mul(a, self.r_squared)
     }
 
     /// Convert from Montgomery form: a * R -> a
-    fn from_montgomery(&self, a: u64) -> u64 {
+    fn montgomery_reduce(self, a: u64) -> u64 {
         self.montgomery_mul(a, 1)
     }
 
@@ -243,7 +243,7 @@ impl ModQ {
 
         while exp > 0 {
             if exp & 1 == 1 {
-                result = result * base;
+                result *= base;
             }
             base = base * base;
             exp >>= 1;

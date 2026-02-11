@@ -396,7 +396,7 @@ fn test_e2e_variant_one_packing() {
             "OnePacking failed for index {}: extracted {:?}, expected {:?}",
             target_index,
             &extracted[..],
-            &expected[..]
+            expected
         );
     }
 }
@@ -457,7 +457,7 @@ fn test_e2e_variant_two_packing() {
         expected,
         "TwoPacking failed: extracted {:?}, expected {:?}",
         &extracted[..],
-        &expected[..]
+        expected
     );
 }
 
@@ -529,7 +529,7 @@ fn test_e2e_inspiring_packing() {
             "InspiRING failed for index {}: extracted {:?}, expected {:?}",
             target_index,
             &extracted[..],
-            &expected[..]
+            expected
         );
     }
 }

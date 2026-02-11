@@ -4,7 +4,7 @@
 
 use std::fs::File;
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -336,7 +336,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_metadata(data_dir: &PathBuf) -> Result<ServerMetadata> {
+fn load_metadata(data_dir: &Path) -> Result<ServerMetadata> {
     let meta_path = data_dir.join("metadata.json");
 
     if meta_path.exists() {

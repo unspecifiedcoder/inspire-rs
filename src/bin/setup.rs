@@ -4,7 +4,7 @@
 
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::Parser;
@@ -254,7 +254,7 @@ fn main() -> Result<()> {
 }
 
 fn save_metadata(
-    output_dir: &PathBuf,
+    output_dir: &Path,
     params: &InspireParams,
     _crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -326,7 +326,7 @@ fn compute_bucket_id(address: &[u8; 20], slot: &[u8; 32]) -> usize {
 }
 
 /// Save bucket index to output directory
-fn save_bucket_index(output_dir: &PathBuf, counts: &[u32]) -> Result<()> {
+fn save_bucket_index(output_dir: &Path, counts: &[u32]) -> Result<()> {
     // Save uncompressed
     let index_path = output_dir.join("bucket-index.bin");
     let mut file = BufWriter::new(File::create(&index_path)?);

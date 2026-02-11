@@ -38,7 +38,7 @@ pub fn extract(
     let delta = crs.params.delta();
     let ctx = crs.params.ntt_context();
 
-    let num_columns = (entry_size * 8 + 15) / 16;
+    let num_columns = (entry_size * 8).div_ceil(16);
     let mut column_values = Vec::with_capacity(num_columns);
 
     // Use per-column ciphertexts if available (proper multi-column extraction)
@@ -121,7 +121,7 @@ fn extract_packed(
     let delta = crs.params.delta();
     let ctx = crs.params.ntt_context();
 
-    let num_columns = (entry_size * 8 + 15) / 16;
+    let num_columns = (entry_size * 8).div_ceil(16);
 
     // Decrypt the packed ciphertext
     let decrypted = response
@@ -162,7 +162,7 @@ pub fn extract_inspiring(
     let delta = crs.params.delta();
     let ctx = crs.params.ntt_context();
 
-    let num_columns = (entry_size * 8 + 15) / 16;
+    let num_columns = (entry_size * 8).div_ceil(16);
 
     // Decrypt the packed ciphertext
     let decrypted = response
@@ -215,14 +215,14 @@ pub fn extract_with_tolerance(
     let delta = crs.params.delta();
     let ctx = crs.params.ntt_context();
 
-    let num_columns = (entry_size * 8 + 15) / 16;
+    let num_columns = (entry_size * 8).div_ceil(16);
     let mut column_values = Vec::with_capacity(num_columns);
 
     let apply_tolerance = |mut value: u64| -> u64 {
         if value > p - tolerance && value < p {
             value = 0;
         } else if value > tolerance && value < 2 * tolerance {
-            value = value % p;
+            value %= p;
         }
         value
     };

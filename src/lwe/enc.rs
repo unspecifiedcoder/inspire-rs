@@ -56,10 +56,10 @@ impl LweSecretKey {
 
         let mut coeffs = vec![0u64; d];
         coeffs[0] = rlwe_sk.poly.coeff(0);
-        for i in 1..d {
+        for (i, coeff) in coeffs.iter_mut().enumerate().take(d).skip(1) {
             let s_i = rlwe_sk.poly.coeff(i);
             // Represent -s_i mod q
-            coeffs[i] = if s_i == 0 { 0 } else { q - s_i };
+            *coeff = if s_i == 0 { 0 } else { q - s_i };
         }
 
         Self { coeffs, dim: d, q }

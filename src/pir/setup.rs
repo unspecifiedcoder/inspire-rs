@@ -188,7 +188,7 @@ pub fn setup(
     // num_columns = ceil(entry_size_bytes * 8 / 16) = ceil(entry_size / 2)
     // Each column is 16 bits (2 bytes) of the entry
     let bytes_per_column = 2usize; // 16-bit columns
-    let num_columns = (entry_size + bytes_per_column - 1) / bytes_per_column;
+    let num_columns = entry_size.div_ceil(bytes_per_column);
     let num_columns = num_columns.max(1); // At least 1 column
 
     let inspiring_pack_params = PackParams::new(params, num_columns);

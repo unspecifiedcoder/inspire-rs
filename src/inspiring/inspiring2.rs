@@ -886,7 +886,7 @@ fn generate_ksk_body(
         // error term (sample Gaussian noise for each coefficient)
         let mut error_coeffs = vec![0u64; n];
         for coeff in error_coeffs.iter_mut() {
-            let sample = sampler.sample() as i64;
+            let sample = sampler.sample();
             *coeff = if sample >= 0 {
                 sample as u64 % q
             } else {
@@ -1311,11 +1311,10 @@ pub fn generate_rotations(pack_params: &PackParams, y_body: &[Poly]) -> Vec<Vec<
     let gen_pows = &pack_params.gen_pows;
 
     let mut y_all = Vec::with_capacity(num_to_pack - 1);
-    for i in 0..(num_to_pack - 1) {
-        let g_pow_i = gen_pows[i];
+    for g_pow_i in gen_pows.iter().take(num_to_pack - 1) {
         let rotated: Vec<Poly> = y_body
             .iter()
-            .map(|poly| apply_automorphism(poly, g_pow_i))
+            .map(|poly| apply_automorphism(poly, *g_pow_i))
             .collect();
         y_all.push(rotated);
     }
@@ -1609,7 +1608,7 @@ pub fn pack_inspiring_legacy(
     let precomp_new = PrecompInsPIR {
         a_hat: precomp
             .r_polys
-            .get(0)
+            .first()
             .cloned()
             .unwrap_or_else(|| Poly::zero_moduli(d, moduli)),
         bold_t: precomp.bold_t.clone(),

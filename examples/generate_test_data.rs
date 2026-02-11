@@ -60,8 +60,8 @@ fn generate_database(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
         entry[0..8].copy_from_slice(&(i as u64).to_le_bytes());
 
         // Remaining bytes: pattern based on index
-        for j in 8..entry_size {
-            entry[j] = ((i * 17 + j * 13) % 256) as u8;
+        for (j, byte) in entry.iter_mut().enumerate().take(entry_size).skip(8) {
+            *byte = ((i * 17 + j * 13) % 256) as u8;
         }
 
         writer.write_all(&entry)?;

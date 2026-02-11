@@ -190,8 +190,8 @@ mod tests {
 
         let result = apply_automorphism(&poly, 1);
 
-        for i in 0..d {
-            assert_eq!(result.coeff(i), coeffs[i], "Identity failed at {}", i);
+        for (i, expected) in coeffs.iter().enumerate().take(d) {
+            assert_eq!(result.coeff(i), *expected, "Identity failed at {}", i);
         }
     }
 
@@ -238,8 +238,8 @@ mod tests {
         let forward = apply_automorphism(&poly, g1);
         let back = apply_automorphism(&forward, g_inv);
 
-        for i in 0..d {
-            assert_eq!(back.coeff(i), coeffs[i], "Inverse failed at {}", i);
+        for (i, expected) in coeffs.iter().enumerate().take(d) {
+            assert_eq!(back.coeff(i), *expected, "Inverse failed at {}", i);
         }
     }
 
