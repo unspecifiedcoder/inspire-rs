@@ -37,7 +37,7 @@
 //! | InspiRING 2-Matrix | 2           | 2 × d × ℓ    |
 //!
 //! # References
-//! - InsPIRe paper: <https://eprint.iacr.org/2024/XXX>
+//! - InsPIRe paper: <https://eprint.iacr.org/2025/1352>
 //! - Google reference: <https://github.com/google/private-membership/tree/main/research/InsPIRe>
 
 use crate::lwe::LweCiphertext;
@@ -1371,7 +1371,7 @@ pub fn pack_inspiring(
 pub struct GeneratorPowers {
     /// Forward powers: g^0, g^1, ..., g^{d-1} mod 2d
     pub powers: Vec<usize>,
-    /// Inverse powers: g^{-0}, g^{-1}, ..., g^{-(d-1)} mod 2d
+    /// Inverse powers for i = 0..d-1: g^{-i} mod 2d (i=0 gives 1)
     pub inv_powers: Vec<usize>,
     /// Multiplicative group generator
     pub generator: usize,
