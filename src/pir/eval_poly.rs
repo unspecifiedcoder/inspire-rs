@@ -190,7 +190,7 @@ fn find_primitive_root(n: usize, q: u64) -> u64 {
     }
 
     assert!(
-        (q - 1).is_multiple_of(n as u64),
+        (q - 1) % (n as u64) == 0,
         "No {}-th root of unity exists mod {}",
         n,
         q
@@ -260,7 +260,7 @@ pub fn generate_monomial_eval_points(t: usize, d: usize) -> Vec<(usize, bool)> {
     }
 
     assert!(
-        (2 * d).is_multiple_of(t),
+        (2 * d) % t == 0,
         "t must divide 2d for roots of unity to exist"
     );
 
@@ -365,7 +365,7 @@ pub fn homomorphic_select(
             break;
         }
 
-        let mut next = Vec::with_capacity(current.len().div_ceil(2));
+        let mut next = Vec::with_capacity(current.len() / 2 + current.len() % 2);
 
         for pair in current.chunks(2) {
             if pair.len() == 2 {

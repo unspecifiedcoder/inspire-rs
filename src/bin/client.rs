@@ -383,8 +383,9 @@ async fn batch_query(
     info!("Loading secret key...");
     let secret_key = load_secret_key(sk_path)?;
 
-    let file = File::open(file).with_context(|| "Failed to open batch file".to_string())?;
-    let reader = BufReader::new(file);
+    let batch_file = File::open(file)
+        .with_context(|| format!("Failed to open batch file: {}", file.display()))?;
+    let reader = BufReader::new(batch_file);
 
     let indices: Vec<u64> = reader
         .lines()
