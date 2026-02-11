@@ -59,8 +59,8 @@ jobs:
           git cat-file -e "${head}^{commit}"
 
           # Validator self-tests to prevent lint policy regressions.
-          should_pass() { ./scripts/validate-commit-msg.sh --quiet "$1"; }
-          should_fail() { if ./scripts/validate-commit-msg.sh --quiet "$1"; then echo "Expected to fail: $1"; exit 1; fi; }
+          should_pass() { ./scripts/validate-commit-msg.sh --quiet -- "$1"; }
+          should_fail() { if ./scripts/validate-commit-msg.sh --quiet -- "$1"; then echo "Expected to fail: $1"; exit 1; fi; }
           should_pass "feat: add linting"
           should_pass "fix(ci)!: tighten checks"
           should_pass "Merge branch 'main' into feature/x"
@@ -68,10 +68,12 @@ jobs:
           should_pass "fixup! feat: add linting"
           should_fail "bad message"
           should_fail "feat add linting"
+          should_fail "--help"
+          should_fail "-h"
 
           failed=0
           while IFS= read -r msg; do
-            if ./scripts/validate-commit-msg.sh --quiet "$msg"; then
+            if ./scripts/validate-commit-msg.sh --quiet -- "$msg"; then
               continue
             fi
             echo "BAD: $msg"

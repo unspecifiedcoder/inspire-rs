@@ -29,6 +29,24 @@ while [ $# -gt 0 ]; do
       input="$1"
       shift
       ;;
+    --)
+      shift
+      if [ $# -eq 0 ]; then
+        usage >&2
+        exit 2
+      fi
+      if [ -n "$mode" ]; then
+        usage >&2
+        exit 2
+      fi
+      mode="message"
+      input="$1"
+      shift
+      if [ $# -gt 0 ]; then
+        input="$input $*"
+      fi
+      break
+      ;;
     -h|--help)
       usage
       exit 0
