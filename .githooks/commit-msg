@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+commit_msg_file="${1:-}"
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+validator="$repo_root/scripts/validate-commit-msg.sh"
+
+if [ -z "$commit_msg_file" ]; then
+  echo "ERROR: missing commit message file argument" >&2
+  exit 2
+fi
+if [ ! -x "$validator" ]; then
+  echo "ERROR: validator script is missing or not executable: $validator" >&2
+  exit 2
+fi
+
+exec "$validator" --from-file "$commit_msg_file"
