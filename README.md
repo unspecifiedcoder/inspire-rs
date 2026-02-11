@@ -259,6 +259,7 @@ Commit messages must follow [Conventional Commits](https://www.conventionalcommi
 Allowed types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`, `style`, `perf`, `build`.
 
 Automatic exceptions: `Merge ...`, `Revert ...`, and `fixup!/squash!/amend!` commits.
+Validation is shared by local hooks and CI via `scripts/validate-commit-msg.sh`.
 
 Examples:
 - `feat: add batch query support`

@@ -55,16 +55,25 @@ jobs:
           set -euo pipefail
           base="${{ github.event.pull_request.base.sha }}"
           head="${{ github.event.pull_request.head.sha }}"
-          pattern='^(feat|fix|docs|chore|refactor|test|ci|style|perf|build)(\([a-zA-Z0-9_/ -]+\))?\!?: .+'
           git cat-file -e "${base}^{commit}"
           git cat-file -e "${head}^{commit}"
+
+          # Validator self-tests to prevent lint policy regressions.
+          should_pass() { ./scripts/validate-commit-msg.sh --quiet "$1"; }
+          should_fail() { if ./scripts/validate-commit-msg.sh --quiet "$1"; then echo "Expected to fail: $1"; exit 1; fi; }
+          should_pass "feat: add linting"
+          should_pass "fix(ci)!: tighten checks"
+          should_pass "Merge branch 'main' into feature/x"
+          should_pass "Revert \"feat: add linting\""
+          should_pass "fixup! feat: add linting"
+          should_fail "bad message"
+          should_fail "feat add linting"
+
           failed=0
           while IFS= read -r msg; do
-            # Allow merge/revert commits and fixup/squash/amend prefixes
-            if echo "$msg" | grep -qE '^Merge '; then continue; fi
-            if echo "$msg" | grep -qE '^Revert '; then continue; fi
-            if echo "$msg" | grep -qE '^(fixup|squash|amend)! '; then continue; fi
-            if echo "$msg" | grep -qE "$pattern"; then continue; fi
+            if ./scripts/validate-commit-msg.sh --quiet "$msg"; then
+              continue
+            fi
             echo "BAD: $msg"
             failed=1
           done < <(git log --format='%s' "$base".."$head")
