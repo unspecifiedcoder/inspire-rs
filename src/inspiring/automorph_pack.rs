@@ -636,6 +636,31 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "pack_single_lwe requires at least")]
+    fn test_pack_single_panics_when_automorph_keys_are_missing() {
+        let params = test_params();
+        let d = params.ring_dim;
+        let q = params.q;
+        let delta = params.delta();
+        let ctx = params.ntt_context();
+        let mut sampler = GaussianSampler::new(params.sigma);
+
+        let sk = RlweSecretKey::generate(&params, &mut sampler);
+        let mut automorph_keys = generate_automorph_keys(&sk, &params, &mut sampler);
+        automorph_keys.pop();
+
+        let message = 7u64;
+        let mut msg_coeffs = vec![0u64; d];
+        msg_coeffs[0] = message;
+        let msg_poly = Poly::from_coeffs(msg_coeffs, q);
+        let a = Poly::random(d, q);
+        let error = sample_error_poly(d, q, &mut sampler);
+        let ct = RlweCiphertext::encrypt(&sk, &msg_poly, delta, a, &error, &ctx);
+
+        let _ = pack_single_lwe(&ct, &automorph_keys, &params);
+    }
+
+    #[test]
     fn test_pack_two_rlwes() {
         let params = test_params();
         let d = params.ring_dim;
