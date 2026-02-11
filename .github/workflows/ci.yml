@@ -66,7 +66,7 @@ jobs:
           done < <(git log --format='%s' "$base".."$head")
           if [ "$failed" -eq 1 ]; then
             echo ""
-            echo "Commit messages must follow Conventional Commits: <type>[(<scope>)]: <description>"
+            echo "Commit messages must follow Conventional Commits: <type>[(<scope>)][!]: <description>"
             echo "Types: feat, fix, docs, chore, refactor, test, ci, style, perf, build"
             exit 1
           fi

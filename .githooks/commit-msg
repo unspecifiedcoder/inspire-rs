@@ -30,7 +30,7 @@ fi
 
 echo >&2 "ERROR: Commit message does not follow Conventional Commits format."
 echo >&2 ""
-echo >&2 "  Expected: <type>[(<scope>)]: <description>"
+echo >&2 "  Expected: <type>[(<scope>)][!]: <description>"
 echo >&2 "  Types:    feat, fix, docs, chore, refactor, test, ci, style, perf, build"
 echo >&2 ""
 echo >&2 "  Examples:"

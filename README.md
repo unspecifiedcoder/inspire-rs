@@ -252,8 +252,8 @@ Run query size analysis: `cargo run --release --example query_size_comparison`
 
 Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/):
 
-```
-<type>[(<scope>)]: <description>
+```text
+<type>[(<scope>)][!]: <description>
 ```
 
 Allowed types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`, `style`, `perf`, `build`.
@@ -262,6 +262,7 @@ Examples:
 - `feat: add batch query support`
 - `fix(server): handle empty database`
 - `docs: update protocol parameters table`
+- `chore!: drop legacy API`
 
 A local git hook validates this automatically. Enable it with:
 
