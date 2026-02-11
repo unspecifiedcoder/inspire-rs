@@ -26,9 +26,9 @@ pub fn gadget_decompose(poly: &Poly, gadget: &GadgetVector) -> Vec<Poly> {
     for j in 0..d {
         let mut val = poly.coeff(j);
 
-        for item in result.iter_mut().take(ell) {
+        for result_poly in &mut result {
             let digit = val % base;
-            item.set_coeff(j, digit);
+            result_poly.set_coeff(j, digit);
             val /= base;
         }
     }

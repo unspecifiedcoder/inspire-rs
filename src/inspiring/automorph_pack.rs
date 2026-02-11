@@ -335,7 +335,7 @@ pub fn pack_single_lwe(
     let mut cur = ct.clone();
 
     // Apply: cur = cur + τ_t(cur) for each level
-    for (i, ks_matrix) in automorph_keys.iter().enumerate().take(log_d) {
+    for (i, ks_matrix) in automorph_keys[..log_d].iter().enumerate() {
         let t = (d >> i) + 1; // t = d/2^i + 1
         let tau_cur = homomorphic_automorph(&cur, t, ks_matrix, &ctx);
         cur = cur.add(&tau_cur);

@@ -1309,12 +1309,22 @@ pub fn packing_online_fully_ntt(
 pub fn generate_rotations(pack_params: &PackParams, y_body: &[Poly]) -> Vec<Vec<Poly>> {
     let num_to_pack = pack_params.num_to_pack;
     let gen_pows = &pack_params.gen_pows;
+    if num_to_pack <= 1 {
+        return Vec::new();
+    }
+    let required = num_to_pack - 1;
+    assert!(
+        gen_pows.len() >= required,
+        "generator powers must have at least {} entries, got {}",
+        required,
+        gen_pows.len()
+    );
 
-    let mut y_all = Vec::with_capacity(num_to_pack - 1);
-    for g_pow_i in gen_pows.iter().take(num_to_pack - 1) {
+    let mut y_all = Vec::with_capacity(required);
+    for &g_pow_i in &gen_pows[..required] {
         let rotated: Vec<Poly> = y_body
             .iter()
-            .map(|poly| apply_automorphism(poly, *g_pow_i))
+            .map(|poly| apply_automorphism(poly, g_pow_i))
             .collect();
         y_all.push(rotated);
     }
