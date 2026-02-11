@@ -5,12 +5,12 @@
 //!
 //! - **Modular arithmetic** over Z_q using Montgomery reduction
 //! - **Number-Theoretic Transform (NTT)** for fast polynomial multiplication
-//! - **Polynomial operations** over R_q = Z_q[X]/(X^d + 1)
+//! - **Polynomial operations** over R_q = Z_q\[X\]/(X^d + 1)
 //! - **Discrete Gaussian sampling** for error term generation
 //!
 //! # Overview
 //!
-//! The InsPIRe protocol operates over the polynomial ring R_q = Z_q[X]/(X^d + 1),
+//! The InsPIRe protocol operates over the polynomial ring R_q = Z_q\[X\]/(X^d + 1),
 //! where d is typically 2048 or 4096 and q is an NTT-friendly prime (~2^60).
 //! All cryptographic operations (encryption, key switching, homomorphic operations)
 //! are built on these mathematical primitives.

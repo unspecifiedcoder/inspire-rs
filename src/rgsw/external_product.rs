@@ -82,7 +82,7 @@ pub fn gadget_reconstruct(decomposed: &[Poly], gadget: &GadgetVector) -> Poly {
 ///
 /// Given RLWE ciphertext (a, b) and RGSW ciphertext C:
 /// 1. Decompose a and b using gadget inverse: g⁻¹(a), g⁻¹(b)
-/// 2. Compute: (a', b') = Σᵢ [g⁻¹(a)ᵢ · C[i] + g⁻¹(b)ᵢ · C[ℓ+i]]
+/// 2. Compute: (a', b') = Σᵢ \[g⁻¹(a)ᵢ · C\[i\] + g⁻¹(b)ᵢ · C\[ℓ+i\]\]
 ///
 /// The result decrypts to m₀·m₁ with controlled noise growth.
 pub fn external_product(

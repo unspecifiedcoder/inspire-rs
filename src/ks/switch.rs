@@ -14,7 +14,7 @@ use super::setup::KeySwitchingMatrix;
 /// # Algorithm
 ///
 /// 1. Decompose a using gadget: g⁻¹(a) = [a₀, a₁, ..., a_{ℓ-1}]
-/// 2. Compute: (a', b') = (0, b) + Σᵢ aᵢ · K[i]
+/// 2. Compute: (a', b') = (0, b) + Σᵢ aᵢ · K\[i\]
 ///
 /// The result satisfies: a'·s' + b' ≈ a·s + b (the same decrypted message)
 ///

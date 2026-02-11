@@ -65,7 +65,7 @@ pub fn encode_direct(values: &[u64], d: usize, q: u64, moduli: &[u64]) -> Poly {
 
 /// Create inverse monomial X^(-k) mod (X^d + 1)
 ///
-/// In R_q = Z_q[X]/(X^d + 1), we have X^d = -1, so:
+/// In R_q = Z_q\[X\]/(X^d + 1), we have X^d = -1, so:
 /// - X^(-k) = X^(2d-k) mod (X^d + 1)
 /// - For k > 0: X^(2d-k) = X^(d + (d-k)) = -X^(d-k)
 /// - For k = 0: X^0 = 1
