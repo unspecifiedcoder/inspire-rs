@@ -325,10 +325,17 @@ pub fn pack_single_lwe(
     let ctx = params.ntt_context();
     let log_d = (d as f64).log2() as usize;
 
+    assert!(
+        automorph_keys.len() >= log_d,
+        "pack_single_lwe requires at least {} automorphism keys, got {}",
+        log_d,
+        automorph_keys.len()
+    );
+
     let mut cur = ct.clone();
 
     // Apply: cur = cur + τ_t(cur) for each level
-    for (i, ks_matrix) in automorph_keys.iter().enumerate().take(log_d) {
+    for (i, ks_matrix) in automorph_keys[..log_d].iter().enumerate() {
         let t = (d >> i) + 1; // t = d/2^i + 1
         let tau_cur = homomorphic_automorph(&cur, t, ks_matrix, &ctx);
         cur = cur.add(&tau_cur);
@@ -626,6 +633,31 @@ mod tests {
             decrypted.coeff(0),
             expected_coeff0
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "pack_single_lwe requires at least")]
+    fn test_pack_single_panics_when_automorph_keys_are_missing() {
+        let params = test_params();
+        let d = params.ring_dim;
+        let q = params.q;
+        let delta = params.delta();
+        let ctx = params.ntt_context();
+        let mut sampler = GaussianSampler::new(params.sigma);
+
+        let sk = RlweSecretKey::generate(&params, &mut sampler);
+        let mut automorph_keys = generate_automorph_keys(&sk, &params, &mut sampler);
+        automorph_keys.pop();
+
+        let message = 7u64;
+        let mut msg_coeffs = vec![0u64; d];
+        msg_coeffs[0] = message;
+        let msg_poly = Poly::from_coeffs(msg_coeffs, q);
+        let a = Poly::random(d, q);
+        let error = sample_error_poly(d, q, &mut sampler);
+        let ct = RlweCiphertext::encrypt(&sk, &msg_poly, delta, a, &error, &ctx);
+
+        let _ = pack_single_lwe(&ct, &automorph_keys, &params);
     }
 
     #[test]

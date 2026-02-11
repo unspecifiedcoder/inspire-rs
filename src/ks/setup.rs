@@ -139,8 +139,14 @@ pub fn generate_ks_matrix(
 
     let moduli = from_key.poly.moduli();
     let mut rows = Vec::with_capacity(ell);
+    assert!(
+        powers.len() >= ell,
+        "gadget powers must have at least {} entries, got {}",
+        ell,
+        powers.len()
+    );
 
-    for &power in powers.iter().take(ell) {
+    for &power in &powers[..ell] {
         // Sample random a_i
         let a = Poly::random_moduli(d, moduli);
 

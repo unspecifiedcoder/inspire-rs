@@ -37,19 +37,31 @@ pub fn key_switch(
 
     // Decompose the 'a' component
     let a_decomp = gadget_decompose(&ct.a, gadget);
+    assert!(
+        ks_matrix.rows.len() >= ell,
+        "key switching matrix has {} rows but gadget length is {}",
+        ks_matrix.rows.len(),
+        ell
+    );
+    assert!(
+        a_decomp.len() >= ell,
+        "gadget decomposition has {} parts but gadget length is {}",
+        a_decomp.len(),
+        ell
+    );
 
     // Initialize result: (0, b)
     let mut result_a = Poly::zero_moduli(d, moduli);
     let mut result_b = ct.b.clone();
 
     // Accumulate: Σᵢ aᵢ · K[i]
-    for (i, ks_row) in ks_matrix.rows.iter().enumerate().take(ell) {
+    for (a_decomp_i, ks_row) in a_decomp[..ell].iter().zip(ks_matrix.rows[..ell].iter()) {
         // aᵢ · K[i].a
-        let term_a = a_decomp[i].mul_ntt(&ks_row.a, ctx);
+        let term_a = a_decomp_i.mul_ntt(&ks_row.a, ctx);
         result_a += term_a;
 
         // aᵢ · K[i].b
-        let term_b = a_decomp[i].mul_ntt(&ks_row.b, ctx);
+        let term_b = a_decomp_i.mul_ntt(&ks_row.b, ctx);
         result_b += term_b;
     }
 
@@ -82,6 +94,18 @@ pub fn key_switch_ntt(
             p
         })
         .collect();
+    assert!(
+        ks_matrix.rows.len() >= ell,
+        "key switching matrix has {} rows but gadget length is {}",
+        ks_matrix.rows.len(),
+        ell
+    );
+    assert!(
+        a_decomp_ntt.len() >= ell,
+        "gadget decomposition has {} parts but gadget length is {}",
+        a_decomp_ntt.len(),
+        ell
+    );
 
     // Initialize result: (0, b)
     let mut result_a = Poly::zero_moduli(d, moduli);
@@ -91,7 +115,7 @@ pub fn key_switch_ntt(
     result_b.to_ntt(ctx);
 
     // Accumulate in NTT domain
-    for (i, ks_row) in ks_matrix.rows.iter().enumerate().take(ell) {
+    for (a_decomp_ntt_i, ks_row) in a_decomp_ntt[..ell].iter().zip(ks_matrix.rows[..ell].iter()) {
         // Convert KS row to NTT if needed
         let mut ks_a = ks_row.a.clone();
         let mut ks_b = ks_row.b.clone();
@@ -99,11 +123,11 @@ pub fn key_switch_ntt(
         ks_b.to_ntt(ctx);
 
         // aᵢ · K[i].a in NTT domain
-        let term_a = a_decomp_ntt[i].mul_ntt_domain(&ks_a, ctx);
+        let term_a = a_decomp_ntt_i.mul_ntt_domain(&ks_a, ctx);
         result_a += term_a;
 
         // aᵢ · K[i].b in NTT domain
-        let term_b = a_decomp_ntt[i].mul_ntt_domain(&ks_b, ctx);
+        let term_b = a_decomp_ntt_i.mul_ntt_domain(&ks_b, ctx);
         result_b += term_b;
     }
 

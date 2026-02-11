@@ -143,11 +143,17 @@ impl RgswCiphertext {
 
         let mut rows = Vec::with_capacity(2 * ell);
         let powers = gadget.powers();
+        assert!(
+            powers.len() >= ell,
+            "gadget powers must have at least {} entries, got {}",
+            ell,
+            powers.len()
+        );
 
         // First ℓ rows: RLWE(0) + (m·z^i, 0)
         // Row i = (a + m·z^i, b) where (a, b) encrypts 0
         // Decrypts to: (a + m·z^i)·s + b = a·s + b + m·z^i·s ≈ m·z^i·s
-        for &power in powers.iter().take(ell) {
+        for &power in &powers[..ell] {
             let a_rand = Poly::random_moduli(d, moduli);
             let error = sample_error_poly(d, moduli, sampler);
 
@@ -165,7 +171,7 @@ impl RgswCiphertext {
         // Next ℓ rows: RLWE(0) + (0, m·z^i)
         // Row ℓ+i = (a, b + m·z^i) where (a, b) encrypts 0
         // Decrypts to: a·s + b + m·z^i ≈ m·z^i
-        for &power in powers.iter().take(ell) {
+        for &power in &powers[..ell] {
             let a = Poly::random_moduli(d, moduli);
             let error = sample_error_poly(d, moduli, sampler);
 
@@ -246,6 +252,12 @@ impl SeededRgswCiphertext {
         let mut rows = Vec::with_capacity(2 * ell);
         let powers = gadget.powers();
         let mut rng = rand::thread_rng();
+        assert!(
+            powers.len() >= ell,
+            "gadget powers must have at least {} entries, got {}",
+            ell,
+            powers.len()
+        );
 
         // First ℓ rows: RLWE(0) + (m·z^i, 0)
         // Original: (a_rand + m·z^i, b) where b = -a_rand·s + e
@@ -254,7 +266,7 @@ impl SeededRgswCiphertext {
         // Seeded: we store (seed, b_adjusted), expand gives (a_rand, b_adjusted)
         // For equivalent decrypt: a_rand·s + b_adjusted = m·z^i·s + e
         // Therefore: b_adjusted = b + m·z^i·s
-        for &power in powers.iter().take(ell) {
+        for &power in &powers[..ell] {
             let mut seed = [0u8; 32];
             rng.fill_bytes(&mut seed);
 
@@ -275,7 +287,7 @@ impl SeededRgswCiphertext {
         }
 
         // Next ℓ rows: RLWE(0) + (0, m·z^i)
-        for &power in powers.iter().take(ell) {
+        for &power in &powers[..ell] {
             let mut seed = [0u8; 32];
             rng.fill_bytes(&mut seed);
 
