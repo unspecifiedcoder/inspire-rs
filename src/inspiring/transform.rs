@@ -66,6 +66,10 @@ pub fn transform_partial(
     debug_assert!(gamma <= d / 2, "gamma must be ≤ d/2 for partial packing");
     debug_assert_eq!(lwe.a.len(), d, "LWE dimension must match ring dimension");
     debug_assert_eq!(lwe.q, q, "LWE modulus must match params");
+    assert!(
+        gamma > 0 && gamma <= d,
+        "gamma must be in the range 1..=ring_dim"
+    );
 
     // For partial packing, we only need to handle γ positions
     // The transformation is similar but optimized for fewer ciphertexts
@@ -73,6 +77,7 @@ pub fn transform_partial(
     // We reduce the effective dimension of the intermediate ciphertext
     // by grouping coefficients together.
     let group_size = d / gamma;
+    assert!(group_size <= d, "group_size must not exceed ring dimension");
 
     // Create ceil(gamma) polynomials for the a-component
     let mut a_polys = Vec::with_capacity(gamma);
