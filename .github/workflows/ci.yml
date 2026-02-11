@@ -42,6 +42,50 @@ jobs:
         continue-on-error: true
         run: command -v sccache >/dev/null && sccache --show-stats || true
 
+  commit-msg-lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate PR commit messages
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          git cat-file -e "${base}^{commit}"
+          git cat-file -e "${head}^{commit}"
+
+          # Validator self-tests to prevent lint policy regressions.
+          should_pass() { ./scripts/validate-commit-msg.sh --quiet -- "$1"; }
+          should_fail() { if ./scripts/validate-commit-msg.sh --quiet -- "$1"; then echo "Expected to fail: $1"; exit 1; fi; }
+          should_pass "feat: add linting"
+          should_pass "fix(ci)!: tighten checks"
+          should_pass "Merge branch 'main' into feature/x"
+          should_pass "Revert \"feat: add linting\""
+          should_pass "fixup! feat: add linting"
+          should_fail "bad message"
+          should_fail "feat add linting"
+          should_fail "--help"
+          should_fail "-h"
+
+          failed=0
+          while IFS= read -r msg; do
+            if ./scripts/validate-commit-msg.sh --quiet -- "$msg"; then
+              continue
+            fi
+            echo "BAD: $msg"
+            failed=1
+          done < <(git log --format='%s' "$base".."$head")
+          if [ "$failed" -eq 1 ]; then
+            echo ""
+            echo "Commit messages must follow Conventional Commits: <type>[(<scope>)][!]: <description>"
+            echo "Types: feat, fix, docs, chore, refactor, test, ci, style, perf, build"
+            exit 1
+          fi
+
   clippy:
     runs-on: ubuntu-latest
     env:

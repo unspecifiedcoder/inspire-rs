@@ -248,6 +248,32 @@ Run query size analysis: `cargo run --release --example query_size_comparison`
 - [docs/COMMUNICATION_COSTS.md](docs/COMMUNICATION_COSTS.md) - Bandwidth analysis
 - [docs/protocol-visualization.html](docs/protocol-visualization.html) - Interactive D3 visualization of protocol and costs
 
+## Contributing
+
+Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```text
+<type>[(<scope>)][!]: <description>
+```
+
+Allowed types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`, `style`, `perf`, `build`.
+
+Automatic exceptions: `Merge ...`, `Revert ...`, and `fixup!/squash!/amend!` commits.
+Validation is shared by local hooks and CI via `scripts/validate-commit-msg.sh`.
+
+Examples:
+- `feat: add batch query support`
+- `fix(server): handle empty database`
+- `docs: update protocol parameters table`
+- `chore!: drop legacy API`
+
+A local git hook validates this automatically. Enable it with:
+
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/commit-msg
+```
+
 ## License
 
 MIT OR Apache-2.0
