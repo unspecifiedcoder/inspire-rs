@@ -325,6 +325,13 @@ pub fn pack_single_lwe(
     let ctx = params.ntt_context();
     let log_d = (d as f64).log2() as usize;
 
+    assert!(
+        automorph_keys.len() >= log_d,
+        "pack_single_lwe requires at least {} automorphism keys, got {}",
+        log_d,
+        automorph_keys.len()
+    );
+
     let mut cur = ct.clone();
 
     // Apply: cur = cur + τ_t(cur) for each level
