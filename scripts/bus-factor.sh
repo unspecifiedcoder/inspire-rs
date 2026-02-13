@@ -28,18 +28,6 @@ repo_path="."
 risk_threshold=80
 output_format="markdown"
 
-json_escape() {
-  local s="$1"
-  s=${s//\\/\\\\}
-  s=${s//\"/\\\"}
-  s=${s//$'\b'/\\b}
-  s=${s//$'\f'/\\f}
-  s=${s//$'\t'/\\t}
-  s=${s//$'\r'/\\r}
-  s=${s//$'\n'/\\n}
-  printf '%s' "$s"
-}
-
 tsv_escape() {
   local s="$1"
   s=${s//\\/\\\\}
@@ -95,7 +83,7 @@ if [ "$output_format" != "markdown" ] && [ "$output_format" != "json" ]; then
   exit 2
 fi
 
-if [ ! -d "$repo_path/.git" ] && ! git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
+if ! git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
   echo "ERROR: $repo_path is not a git repository" >&2
   exit 1
 fi
@@ -116,9 +104,9 @@ if [ ! -s "$tracked_files" ]; then
 fi
 
 # --- Phase 1: Per-file blame analysis ---
-# Output: file | author | line_count
+# Output: file\tauthor\tline_count
 blame_data="$tmp_dir/blame_data.tsv"
-touch "$blame_data"
+: > "$blame_data"
 blame_err="$tmp_dir/blame.err"
 
 while IFS= read -r -d '' file; do
@@ -126,9 +114,15 @@ while IFS= read -r -d '' file; do
   [ -f "$repo_path/$file" ] || continue
 
   escaped_file=$(tsv_escape "$file")
+  # Use git blame porcelain and extract only the exact "author " field.
+  # --line-porcelain emits one block per line; "author " (with trailing space)
+  # is distinct from "author-mail", "author-time", "author-tz".
+  # We use awk to aggregate counts per author within this file directly,
+  # avoiding subshell variable-scoping pitfalls from piped while-read loops.
   if ! git -C "$repo_path" blame --line-porcelain -- "$file" 2>"$blame_err" \
     | BUS_FACTOR_FILE="$escaped_file" awk '
       /^author / {
+        # Extract everything after "author " — handles multi-word names
         name = substr($0, 8)
         gsub(/[\t\r\n]/, " ", name)
         counts[name]++
@@ -155,7 +149,7 @@ fi
 
 # --- Phase 2: Compute per-file metrics ---
 per_file="$tmp_dir/per_file.tsv"
-# For each file: total lines, top author, top author lines, top author pct
+# For each file: file, total_lines, top_author, top_author_lines, top_author_pct, author_count
 awk -F'\t' '
 {
   file = $1; author = $2; lines = $3
@@ -164,7 +158,6 @@ awk -F'\t' '
     top_lines[file] = lines
     top_author[file] = author
   }
-  # count distinct authors
   key = file SUBSEP author
   if (!(key in seen)) {
     seen[key] = 1
@@ -179,14 +172,13 @@ END {
 }' "$blame_data" | sort -t$'\t' -k5 -rn > "$per_file"
 
 # --- Phase 3: Per-module aggregation ---
+# Module = first directory component (or "(root)" for top-level files)
 module_data="$tmp_dir/module_data.tsv"
-# Module = top-level directory (or root for top-level files)
 awk -F'\t' '
 {
   file = $1; author = $2; lines = $3
   n = split(file, parts, "/")
-  if (n <= 1) module = "(root)"
-  else module = parts[1]
+  module = (n <= 1) ? "(root)" : parts[1]
   key = module SUBSEP author
   mod_author_lines[key] += lines
   mod_total[module] += lines
@@ -215,74 +207,89 @@ END {
 
 # --- Phase 4: Repository-wide bus-factor ---
 # Bus factor = minimum number of authors whose combined lines exceed 50% of total
-repo_bus_factor="$tmp_dir/bus_factor.txt"
-# Aggregate lines per author, then sort descending
 author_summary="$tmp_dir/author_summary.tsv"
-awk -F'\t' '{ author_lines[$2] += $3 } END { for (a in author_lines) printf "%d\t%s\n", author_lines[a], a }' \
-  "$blame_data" | sort -rn > "$author_summary"
+awk -F'\t' '
+  { author_lines[$2] += $3 }
+  END { for (a in author_lines) printf "%d\t%s\n", author_lines[a], a }
+' "$blame_data" | sort -rn > "$author_summary"
 
-total_authors_count=$(wc -l < "$author_summary" | tr -d ' ')
+total_authors=$(wc -l < "$author_summary" | tr -d ' ')
 grand_total=$(awk -F'\t' '{ s += $1 } END { print s+0 }' "$author_summary")
 half=$(( grand_total / 2 ))
 
 # Compute bus factor: minimum authors covering >50%
 cumulative=0
-bf=0
+bus_factor=0
 while IFS=$'\t' read -r lines _author; do
   cumulative=$((cumulative + lines))
-  bf=$((bf + 1))
+  bus_factor=$((bus_factor + 1))
   if [ "$cumulative" -gt "$half" ]; then break; fi
 done < "$author_summary"
 
-printf "%d\t%d\t%d\n" "$bf" "$total_authors_count" "$grand_total" > "$repo_bus_factor"
-if [ "$grand_total" -gt 0 ]; then
-  awk -F'\t' -v total="$grand_total" '
-  {
-    printf "AUTHOR\t%s\t%d\t%.1f\n", $2, $1, ($1 * 100 / total)
-  }' "$author_summary" >> "$repo_bus_factor"
-fi
-
-bus_factor=$(head -1 "$repo_bus_factor" | cut -f1)
-total_authors=$(head -1 "$repo_bus_factor" | cut -f2)
-total_lines=$(head -1 "$repo_bus_factor" | cut -f3)
+total_files=$(wc -l < "$per_file" | tr -d ' ')
 
 # --- Phase 5: High-risk files ---
 high_risk="$tmp_dir/high_risk.tsv"
 awk -F'\t' -v thresh="$risk_threshold" '$4 * 100 > thresh * $2 { print }' "$per_file" > "$high_risk"
 high_risk_count=$(wc -l < "$high_risk" | tr -d ' ')
-total_files=$(wc -l < "$per_file" | tr -d ' ')
 
 # --- Output ---
 if [ "$output_format" = "json" ]; then
-  # JSON output
-  printf '{\n'
-  printf '  "bus_factor": %d,\n' "$bus_factor"
-  printf '  "total_authors": %d,\n' "$total_authors"
-  printf '  "total_lines": %d,\n' "$total_lines"
-  printf '  "total_files": %d,\n' "$total_files"
-  printf '  "high_risk_files": %d,\n' "$high_risk_count"
-  printf '  "risk_threshold": %d,\n' "$risk_threshold"
+  # Build JSON in one structured pass so delimiters are always consistent.
+  awk -F'\t' -v author_file="$author_summary" -v high_file="$high_risk" \
+      -v bf="$bus_factor" -v ta="$total_authors" -v tl="$grand_total" \
+      -v tf="$total_files" -v hrc="$high_risk_count" -v thresh="$risk_threshold" '
+    function json_escape(s) {
+      gsub(/\\/, "\\\\", s)
+      gsub(/"/, "\\\"", s)
+      gsub(sprintf("%c", 8), "\\b", s)
+      gsub(sprintf("%c", 12), "\\f", s)
+      gsub(/\t/, "\\t", s)
+      gsub(/\r/, "\\r", s)
+      gsub(/\n/, "\\n", s)
+      return s
+    }
+    BEGIN {
+      printf "{\n"
+      printf "  \"bus_factor\": %d,\n", bf
+      printf "  \"total_authors\": %d,\n", ta
+      printf "  \"total_lines\": %d,\n", tl
+      printf "  \"total_files\": %d,\n", tf
+      printf "  \"high_risk_files\": %d,\n", hrc
+      printf "  \"risk_threshold\": %d,\n", thresh
 
-  printf '  "authors": [\n'
-  first=1
-  tail -n +2 "$repo_bus_factor" | while IFS=$'\t' read -r _ author lines pct; do
-    if [ "$first" -eq 1 ]; then first=0; else printf ',\n'; fi
-    author_json=$(json_escape "$author")
-    printf '    {"name": "%s", "lines": %d, "percentage": %s}' "$author_json" "$lines" "$pct"
-  done
-  printf '\n  ],\n'
+      printf "  \"authors\": [\n"
+      first = 1
+      while ((getline line < author_file) > 0) {
+        split(line, cols, "\t")
+        lines = cols[1]
+        author = cols[2]
+        pct = (tl > 0) ? (lines * 100.0 / tl) : 0
+        if (!first) printf ",\n"
+        printf "    {\"name\": \"%s\", \"lines\": %d, \"percentage\": %.1f}", json_escape(author), lines, pct
+        first = 0
+      }
+      close(author_file)
+      printf "\n  ],\n"
 
-  printf '  "high_risk": [\n'
-  first=1
-  while IFS=$'\t' read -r file total top_author top_lines pct authors; do
-    if [ "$first" -eq 1 ]; then first=0; else printf ',\n'; fi
-    file_json=$(json_escape "$file")
-    top_author_json=$(json_escape "$top_author")
-    printf '    {"file": "%s", "lines": %d, "top_author": "%s", "ownership_pct": %d}' \
-      "$file_json" "$total" "$top_author_json" "$pct"
-  done < "$high_risk"
-  printf '\n  ]\n'
-  printf '}\n'
+      printf "  \"high_risk\": [\n"
+      first = 1
+      while ((getline line < high_file) > 0) {
+        split(line, cols, "\t")
+        file = cols[1]
+        total = cols[2]
+        top_author = cols[3]
+        pct = cols[5]
+        if (!first) printf ",\n"
+        printf "    {\"file\": \"%s\", \"lines\": %d, \"top_author\": \"%s\", \"ownership_pct\": %d}", \
+          json_escape(file), total, json_escape(top_author), pct
+        first = 0
+      }
+      close(high_file)
+      printf "\n  ]\n}\n"
+    }
+  ' /dev/null
+
 else
   # Markdown output
   echo "# Bus-Factor Analysis Report"
@@ -293,7 +300,7 @@ else
   echo "|--------|-------|"
   printf "| Bus Factor | **%d** |\n" "$bus_factor"
   printf "| Total Authors | %d |\n" "$total_authors"
-  printf "| Total Lines Analyzed | %d |\n" "$total_lines"
+  printf "| Total Lines Analyzed | %d |\n" "$grand_total"
   printf "| Total Files Analyzed | %d |\n" "$total_files"
   printf "| High-Risk Files (>%d%% single author) | **%d** |\n" "$risk_threshold" "$high_risk_count"
   echo ""
@@ -302,18 +309,39 @@ else
   echo ""
   echo "| Author | Lines | % of Total |"
   echo "|--------|------:|----------:|"
-  tail -n +2 "$repo_bus_factor" | while IFS=$'\t' read -r _ author lines pct; do
-    printf "| %s | %d | %s%% |\n" "$author" "$lines" "$pct"
-  done
+  # Use awk to format instead of pipe+while to avoid subshell issues
+  awk -F'\t' -v gt="$grand_total" '
+  function md_escape(s) {
+    gsub(/\\/, "\\\\", s)
+    gsub(/\|/, "\\|", s)
+    gsub(/`/, "\\`", s)
+    gsub(/</, "&lt;", s)
+    gsub(/>/, "&gt;", s)
+    return s
+  }
+  {
+    lines = $1; author = $2
+    pct = (gt > 0) ? (lines * 100.0 / gt) : 0
+    printf "| %s | %d | %.1f%% |\n", md_escape(author), lines, pct
+  }' "$author_summary"
   echo ""
 
   echo "## Module Ownership"
   echo ""
   echo "| Module | Lines | Top Author | Ownership % | Authors |"
   echo "|--------|------:|-----------|----------:|--------:|"
-  while IFS=$'\t' read -r module total top_author top_lines pct authors; do
-    printf "| \`%s\` | %d | %s | %d%% | %d |\n" "$module" "$total" "$top_author" "$pct" "$authors"
-  done < "$module_data"
+  awk -F'\t' '
+  function md_escape(s) {
+    gsub(/\\/, "\\\\", s)
+    gsub(/\|/, "\\|", s)
+    gsub(/`/, "\\`", s)
+    gsub(/</, "&lt;", s)
+    gsub(/>/, "&gt;", s)
+    return s
+  }
+  {
+    printf "| `%s` | %d | %s | %d%% | %d |\n", md_escape($1), $2, md_escape($3), $5, $6
+  }' "$module_data"
   echo ""
 
   if [ "$high_risk_count" -gt 0 ]; then
@@ -323,9 +351,18 @@ else
     echo ""
     echo "| File | Lines | Top Author | Ownership % | Authors |"
     echo "|------|------:|-----------|----------:|--------:|"
-    while IFS=$'\t' read -r file total top_author top_lines pct authors; do
-      printf "| \`%s\` | %d | %s | %d%% | %d |\n" "$file" "$total" "$top_author" "$pct" "$authors"
-    done < "$high_risk"
+    awk -F'\t' '
+    function md_escape(s) {
+      gsub(/\\/, "\\\\", s)
+      gsub(/\|/, "\\|", s)
+      gsub(/`/, "\\`", s)
+      gsub(/</, "&lt;", s)
+      gsub(/>/, "&gt;", s)
+      return s
+    }
+    {
+      printf "| `%s` | %d | %s | %d%% | %d |\n", md_escape($1), $2, md_escape($3), $5, $6
+    }' "$high_risk"
     echo ""
   else
     echo "## High-Risk Files"
@@ -338,9 +375,18 @@ else
   echo ""
   echo "| File | Lines | Top Author | Ownership % | Authors |"
   echo "|------|------:|-----------|----------:|--------:|"
-  head -10 "$per_file" | while IFS=$'\t' read -r file total top_author top_lines pct authors; do
-    printf "| \`%s\` | %d | %s | %d%% | %d |\n" "$file" "$total" "$top_author" "$pct" "$authors"
-  done
+  head -10 "$per_file" | awk -F'\t' '
+  function md_escape(s) {
+    gsub(/\\/, "\\\\", s)
+    gsub(/\|/, "\\|", s)
+    gsub(/`/, "\\`", s)
+    gsub(/</, "&lt;", s)
+    gsub(/>/, "&gt;", s)
+    return s
+  }
+  {
+    printf "| `%s` | %d | %s | %d%% | %d |\n", md_escape($1), $2, md_escape($3), $5, $6
+  }'
   echo ""
 
   echo "---"
