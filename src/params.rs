@@ -131,7 +131,7 @@ pub enum InspireVariant {
 /// // Get scaling factor for encoding
 /// let delta = params.delta();
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InspireParams {
     /// Ring dimension d (power of two).
     ///
@@ -428,7 +428,7 @@ impl Default for InspireParams {
 /// // Convert global index to shard coordinates
 /// let (shard_id, local_idx) = config.index_to_shard(100_000_000);
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShardConfig {
     /// Size of each shard in bytes.
     ///
