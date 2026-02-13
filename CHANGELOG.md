@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No substantive unreleased changes._
 
+## [0.2.0] - 2026-02-13
+
+### Added
+
+- Added analytical cost-attribution estimator (`src/cost.rs`) with per-phase breakdowns and
+  a runnable example (`examples/cost_attribution.rs`) (#56).
+- Added bus-factor ownership analyzer script with Markdown/JSON output and risk-threshold
+  reporting (`scripts/bus-factor.sh`) (#57).
+- Added API-contract verification coverage and aligned crate-root re-export access checks
+  (including `extract_inspiring`) (`tests/api_contract.rs`) (#59).
+- Added privacy properties documentation and CI checker script for privacy-claim regressions
+  (`PRIVACY.md`, `scripts/check-privacy-claims.sh`) (#60).
+- Added roadmap entropy detector and CI integration for roadmap drift visibility
+  (`scripts/roadmap-entropy.sh`, `.github/workflows/ci.yml`) (#61).
+
+### Changed
+
+- Improved bus-factor analyzer v2 output generation and robustness under edge-case parsing,
+  argument, and JSON-emission paths (#58).
+- Commit message linting now supports `a11y` type and enforces subject length limits in CI
+  (`scripts/validate-commit-msg.sh`, `.github/workflows/ci.yml`) (#63).
+- Replaced manual modulo checks with `is_multiple_of()` to satisfy clippy recommendations (#62).
+
+### Fixed
+
+- Corrected cost-estimation byte accounting to include CRT limb multiplicity in ciphertext and
+  communication sizing paths (`src/cost.rs`) (#56).
+
 ## [0.1.2] - 2026-01-12
 
 ### Changed
@@ -149,7 +177,8 @@ _No substantive unreleased changes._
 - `ServerCrs`/`ClientState` separation to prevent secret key exposure
 - `#[serde(skip)]` on secret keys to prevent accidental serialization
 
-[Unreleased]: https://github.com/igor53627/inspire-rs/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/igor53627/inspire-rs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/igor53627/inspire-rs/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/igor53627/inspire-rs/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/igor53627/inspire-rs/compare/a02187b...v0.1.1
 [0.1.0]: https://github.com/igor53627/inspire-rs/commit/a02187b
