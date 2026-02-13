@@ -2,7 +2,7 @@
 //!
 //! Preprocesses a STATE_FORMAT state.bin into the format required for InsPIRe PIR queries.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -190,9 +190,20 @@ fn main() -> Result<()> {
     let crs_size = fs::metadata(&crs_path)?.len();
     info!("CRS saved: {:.2} MB", crs_size as f64 / (1024.0 * 1024.0));
 
+    // **Privacy caveat**: The secret key is written as plaintext JSON.
+    // We use restrictive file permissions on Unix (0600); operators should still
+    // store this file on encrypted media. See PRIVACY.md § "Secret Key Stored as Plaintext JSON".
     info!("Saving secret key (keep this secure!)...");
     let sk_path = args.output_dir.join("secret_key.json");
-    let sk_file = File::create(&sk_path)
+    let mut sk_options = OpenOptions::new();
+    sk_options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        sk_options.mode(0o600);
+    }
+    let sk_file = sk_options
+        .open(&sk_path)
         .with_context(|| format!("Failed to create secret key file: {}", sk_path.display()))?;
     let mut writer = BufWriter::new(sk_file);
     serde_json::to_writer(&mut writer, &secret_key)

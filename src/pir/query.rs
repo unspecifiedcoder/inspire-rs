@@ -109,9 +109,12 @@ pub struct ClientState {
 /// Client query sent to server
 ///
 /// Contains encrypted index information for PIR retrieval.
+///
+/// **Privacy caveat**: `shard_id` is sent in cleartext, reducing the anonymity
+/// set from the full database to a single shard. See PRIVACY.md for details.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClientQuery {
-    /// Target shard ID
+    /// Target shard ID (sent unencrypted — reveals which shard the entry is in)
     pub shard_id: u32,
     /// RGSW ciphertext of evaluation point for polynomial evaluation
     pub rgsw_ciphertext: RgswCiphertext,

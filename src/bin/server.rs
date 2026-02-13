@@ -88,6 +88,12 @@ struct ParamsResponse {
 #[derive(Serialize)]
 struct QueryResponse {
     response: ServerResponse,
+    /// Wall-clock processing time returned to the client.
+    ///
+    /// **Privacy caveat**: this value could theoretically leak information about
+    /// server-side memory access patterns (e.g., cache/page-fault timing in
+    /// mmap mode). Deployments sensitive to timing side-channels should strip
+    /// this field via a reverse proxy or add artificial jitter. See PRIVACY.md.
     processing_time_ms: u64,
 }
 
@@ -316,6 +322,9 @@ async fn main() -> Result<()> {
         .route("/query_seeded", post(handle_seeded_query))
         .with_state(state);
 
+    // **Privacy caveat**: The server binds a plain TCP listener with no TLS.
+    // Deploy behind a TLS-terminating reverse proxy for non-local use.
+    // See PRIVACY.md § "No TLS Built In".
     info!("Starting server on {}", args.bind);
     let listener = tokio::net::TcpListener::bind(&args.bind).await?;
 
