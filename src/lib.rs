@@ -8,6 +8,7 @@
 //! - Homomorphic polynomial evaluation for reduced response size
 //! - CRS model for server-side preprocessing
 
+pub mod cost;
 #[cfg(feature = "server")]
 pub mod ethereum_db;
 pub mod inspiring;
