@@ -166,7 +166,7 @@ impl Poly {
         let (moduli_vec, q, inv) = Self::init_moduli(moduli);
         let crt_count = moduli_vec.len();
         assert!(
-            coeffs.len() % crt_count == 0,
+            coeffs.len().is_multiple_of(crt_count),
             "CRT coeffs length must be a multiple of crt_count"
         );
         let dim = coeffs.len() / crt_count;
