@@ -256,7 +256,9 @@ Commit messages must follow [Conventional Commits](https://www.conventionalcommi
 <type>[(<scope>)][!]: <description>
 ```
 
-Allowed types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`, `style`, `perf`, `build`.
+Allowed types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`, `style`, `perf`, `build`, `a11y`.
+
+Subject line must be **100 characters or fewer** (a warning is shown above 72).
 
 Automatic exceptions: `Merge ...`, `Revert ...`, and `fixup!/squash!/amend!` commits.
 Validation is shared by local hooks and CI via `scripts/validate-commit-msg.sh`.

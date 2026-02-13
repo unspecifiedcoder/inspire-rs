@@ -66,10 +66,18 @@ jobs:
           should_pass "Merge branch 'main' into feature/x"
           should_pass "Revert \"feat: add linting\""
           should_pass "fixup! feat: add linting"
+          should_pass "a11y: improve screen reader support"
+          should_pass "a11y(nav)!: rewrite tab order"
           should_fail "bad message"
           should_fail "feat add linting"
           should_fail "--help"
           should_fail "-h"
+
+          # Subject-line length limits: >100 chars must fail.
+          long_ok="feat: $(printf 'x%.0s' $(seq 1 90))"
+          should_pass "$long_ok"
+          long_bad="feat: $(printf 'x%.0s' $(seq 1 95))"
+          should_fail "$long_bad"
 
           failed=0
           while IFS= read -r msg; do
@@ -82,7 +90,8 @@ jobs:
           if [ "$failed" -eq 1 ]; then
             echo ""
             echo "Commit messages must follow Conventional Commits: <type>[(<scope>)][!]: <description>"
-            echo "Types: feat, fix, docs, chore, refactor, test, ci, style, perf, build"
+            echo "Types: feat, fix, docs, chore, refactor, test, ci, style, perf, build, a11y"
+            echo "Subject line: max 100 chars (warning at >72)"
             exit 1
           fi
 

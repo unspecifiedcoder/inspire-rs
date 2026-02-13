@@ -89,8 +89,21 @@ if echo "$commit_msg" | grep -qE '^(fixup|squash|amend)! '; then
   exit 0
 fi
 
+# Subject-line length limits.
+len=${#commit_msg}
+if [ "$len" -gt 100 ]; then
+  if [ "$quiet" -eq 0 ]; then
+    echo >&2 "ERROR: Subject line is $len chars (max 100)."
+    echo >&2 "  Your message: $commit_msg"
+  fi
+  exit 1
+fi
+if [ "$len" -gt 72 ] && [ "$quiet" -eq 0 ]; then
+  echo >&2 "WARNING: Subject line is $len chars (recommended max 72)."
+fi
+
 # Conventional Commits: <type>[(<scope>)][!]: <description>
-pattern='^(feat|fix|docs|chore|refactor|test|ci|style|perf|build)(\([a-zA-Z0-9_/ -]+\))?\!?: .+'
+pattern='^(feat|fix|docs|chore|refactor|test|ci|style|perf|build|a11y)(\([a-zA-Z0-9_/ -]+\))?\!?: .+'
 if echo "$commit_msg" | grep -qE "$pattern"; then
   exit 0
 fi
@@ -102,7 +115,8 @@ fi
 echo >&2 "ERROR: Commit message does not follow Conventional Commits format."
 echo >&2 ""
 echo >&2 "  Expected: <type>[(<scope>)][!]: <description>"
-echo >&2 "  Types:    feat, fix, docs, chore, refactor, test, ci, style, perf, build"
+echo >&2 "  Types:    feat, fix, docs, chore, refactor, test, ci, style, perf, build, a11y"
+echo >&2 "  Length:   max 100 chars (warning at >72)"
 echo >&2 ""
 echo >&2 "  Exceptions: Merge ..., Revert ..., fixup!/squash!/amend!"
 echo >&2 ""
@@ -111,6 +125,7 @@ echo >&2 "    feat: add new query mode"
 echo >&2 "    fix(server): handle empty database"
 echo >&2 "    docs: update README examples"
 echo >&2 "    chore!: drop legacy API"
+echo >&2 "    a11y: improve screen reader support"
 echo >&2 ""
 echo >&2 "  Your message: $commit_msg"
 exit 1
