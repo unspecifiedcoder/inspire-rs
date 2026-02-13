@@ -112,3 +112,15 @@ jobs:
         if: always()
         continue-on-error: true
         run: command -v sccache >/dev/null && sccache --show-stats || true
+
+  roadmap-entropy:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Roadmap entropy check
+        run: scripts/roadmap-entropy.sh --json
