@@ -50,6 +50,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Normalizer self-tests
+        run: ./scripts/normalize-commit-msg.sh --test
+
       - name: Validate PR commit messages
         run: |
           set -euo pipefail

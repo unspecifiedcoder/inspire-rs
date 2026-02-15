@@ -269,12 +269,16 @@ Examples:
 - `docs: update protocol parameters table`
 - `chore!: drop legacy API`
 
-A local git hook validates this automatically. Enable it with:
+Local git hooks validate and auto-fix commit messages. Enable them with:
 
 ```bash
 git config core.hooksPath .githooks
-chmod +x .githooks/commit-msg
+chmod +x .githooks/commit-msg .githooks/prepare-commit-msg
 ```
+
+The `prepare-commit-msg` hook auto-corrects common mistakes (uppercase types, missing
+space after colon, trailing periods, uppercase description start) before the `commit-msg`
+validator runs.
 
 ## License
 
