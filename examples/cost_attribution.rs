@@ -52,21 +52,15 @@ fn main() {
 
         // Respond phase
         println!("RESPOND PHASE (server)");
-        print_row(
-            "  External products",
-            &breakdowns,
-            |b| b.respond.external_products,
-        );
-        print_row(
-            "  Gadget decompositions",
-            &breakdowns,
-            |b| b.respond.gadget_decompositions,
-        );
-        print_row(
-            "  Poly multiplications",
-            &breakdowns,
-            |b| b.respond.poly_multiplications,
-        );
+        print_row("  External products", &breakdowns, |b| {
+            b.respond.external_products
+        });
+        print_row("  Gadget decompositions", &breakdowns, |b| {
+            b.respond.gadget_decompositions
+        });
+        print_row("  Poly multiplications", &breakdowns, |b| {
+            b.respond.poly_multiplications
+        });
         print_row("  NTT transforms", &breakdowns, |b| {
             b.respond.ntt_transforms
         });
@@ -78,16 +72,12 @@ fn main() {
         println!("PACKING (respond sub-phase)");
         print_row("  Key-switches", &breakdowns, |b| b.packing.key_switches);
         print_row("  Automorphisms", &breakdowns, |b| b.packing.automorphisms);
-        print_row(
-            "  Gadget decompositions",
-            &breakdowns,
-            |b| b.packing.gadget_decompositions,
-        );
-        print_row(
-            "  Poly multiplications",
-            &breakdowns,
-            |b| b.packing.poly_multiplications,
-        );
+        print_row("  Gadget decompositions", &breakdowns, |b| {
+            b.packing.gadget_decompositions
+        });
+        print_row("  Poly multiplications", &breakdowns, |b| {
+            b.packing.poly_multiplications
+        });
         print_row("  NTT transforms", &breakdowns, |b| {
             b.packing.ntt_transforms
         });
@@ -97,22 +87,16 @@ fn main() {
 
         // Query phase
         println!("QUERY (client)");
-        print_row(
-            "  Poly multiplications",
-            &breakdowns,
-            |b| b.query.poly_multiplications,
-        );
-        print_row("  NTT transforms", &breakdowns, |b| {
-            b.query.ntt_transforms
+        print_row("  Poly multiplications", &breakdowns, |b| {
+            b.query.poly_multiplications
         });
+        print_row("  NTT transforms", &breakdowns, |b| b.query.ntt_transforms);
 
         // Extract phase
         println!("EXTRACT (client)");
-        print_row(
-            "  Poly multiplications",
-            &breakdowns,
-            |b| b.extract.poly_multiplications,
-        );
+        print_row("  Poly multiplications", &breakdowns, |b| {
+            b.extract.poly_multiplications
+        });
         print_row("  NTT transforms", &breakdowns, |b| {
             b.extract.ntt_transforms
         });
@@ -134,12 +118,8 @@ fn main() {
         print_row("  External products", &breakdowns, |b| {
             b.total().external_products
         });
-        print_row("  Key-switches", &breakdowns, |b| {
-            b.total().key_switches
-        });
-        print_row("  Automorphisms", &breakdowns, |b| {
-            b.total().automorphisms
-        });
+        print_row("  Key-switches", &breakdowns, |b| b.total().key_switches);
+        print_row("  Automorphisms", &breakdowns, |b| b.total().automorphisms);
 
         println!();
     }
@@ -154,7 +134,10 @@ where
     if vals.iter().all(|v| *v == 0) {
         return;
     }
-    let cols = vals.iter().map(|v| format!(" {:>16}", v)).collect::<String>();
+    let cols = vals
+        .iter()
+        .map(|v| format!(" {:>16}", v))
+        .collect::<String>();
     println!("{:<30}{}", label, cols);
 }
 

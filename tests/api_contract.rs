@@ -196,22 +196,23 @@ fn client_state_secret_keys_not_serialized() {
 
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
-    let (_state, _query) = inspire::pir::query(
-        &crs,
-        42,
-        &encoded_db.config,
-        &rlwe_sk,
-        &mut sampler,
-    )
-    .unwrap();
+    let (_state, _query) =
+        inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
 
     // Serialize → deserialize via JSON
     let json = serde_json::to_string(&_state).unwrap();
     let recovered: ClientState = serde_json::from_str(&json).unwrap();
 
     // Secret keys must NOT survive the round-trip
-    assert_eq!(recovered.secret_key.dim, 0, "LWE secret key must be zeroed after serde round-trip");
-    assert_eq!(recovered.rlwe_secret_key.ring_dim(), 0, "RLWE secret key must be zeroed after serde round-trip");
+    assert_eq!(
+        recovered.secret_key.dim, 0,
+        "LWE secret key must be zeroed after serde round-trip"
+    );
+    assert_eq!(
+        recovered.rlwe_secret_key.ring_dim(),
+        0,
+        "RLWE secret key must be zeroed after serde round-trip"
+    );
 
     // Non-secret metadata MUST survive
     assert_eq!(recovered.index, _state.index);
@@ -236,14 +237,8 @@ fn client_state_secret_keys_absent_from_json() {
 
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
-    let (state, _query) = inspire::pir::query(
-        &crs,
-        42,
-        &encoded_db.config,
-        &rlwe_sk,
-        &mut sampler,
-    )
-    .unwrap();
+    let (state, _query) =
+        inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
 
     let json = serde_json::to_string(&state).unwrap();
 
@@ -274,8 +269,7 @@ fn server_crs_skipped_fields_absent_from_json() {
         .map(|i| (i % 256) as u8)
         .collect();
 
-    let (crs, _encoded_db, _rlwe_sk) =
-        setup(&params, &database, entry_size, &mut sampler).unwrap();
+    let (crs, _encoded_db, _rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     // The CRS should have the skipped fields set before serialization
     assert!(
@@ -314,8 +308,7 @@ fn server_crs_skipped_fields_none_after_roundtrip() {
         .map(|i| (i % 256) as u8)
         .collect();
 
-    let (crs, _encoded_db, _rlwe_sk) =
-        setup(&params, &database, entry_size, &mut sampler).unwrap();
+    let (crs, _encoded_db, _rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let json = serde_json::to_string(&crs).unwrap();
     let recovered: ServerCrs = serde_json::from_str(&json).unwrap();
@@ -356,14 +349,8 @@ fn server_response_bincode_roundtrip() {
 
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
-    let (_state, client_query) = inspire::pir::query(
-        &crs,
-        42,
-        &encoded_db.config,
-        &rlwe_sk,
-        &mut sampler,
-    )
-    .unwrap();
+    let (_state, client_query) =
+        inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
 
     let response = respond(&crs, &encoded_db, &client_query).unwrap();
 
@@ -397,14 +384,8 @@ fn server_response_json_roundtrip() {
 
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
-    let (_state, client_query) = inspire::pir::query(
-        &crs,
-        42,
-        &encoded_db.config,
-        &rlwe_sk,
-        &mut sampler,
-    )
-    .unwrap();
+    let (_state, client_query) =
+        inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
 
     let response = respond(&crs, &encoded_db, &client_query).unwrap();
 
@@ -487,12 +468,8 @@ fn reexport_extract_inspiring_accessible() {
 #[test]
 fn reexport_all_extract_variants_accessible() {
     // All extract functions should be accessible from the crate root
-    type ExtractFn = fn(
-        &ServerCrs,
-        &ClientState,
-        &ServerResponse,
-        usize,
-    ) -> inspire::pir::Result<Vec<u8>>;
+    type ExtractFn =
+        fn(&ServerCrs, &ClientState, &ServerResponse, usize) -> inspire::pir::Result<Vec<u8>>;
     type ExtractWithVariantFn = fn(
         &ServerCrs,
         &ClientState,
@@ -553,8 +530,7 @@ fn api_setup_query_respond_extract_compiles() {
         .collect();
 
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
-    let (state, client_query) =
-        query(&crs, 0, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
+    let (state, client_query) = query(&crs, 0, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
     let response = respond(&crs, &encoded_db, &client_query).unwrap();
     let result = extract(&crs, &state, &response, entry_size).unwrap();
 
@@ -605,14 +581,8 @@ fn client_query_json_roundtrip() {
 
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
-    let (_state, client_query) = inspire::pir::query(
-        &crs,
-        42,
-        &encoded_db.config,
-        &rlwe_sk,
-        &mut sampler,
-    )
-    .unwrap();
+    let (_state, client_query) =
+        inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
 
     let json = serde_json::to_string(&client_query).unwrap();
     let recovered: ClientQuery = serde_json::from_str(&json).unwrap();
@@ -637,14 +607,8 @@ fn seeded_client_query_json_roundtrip() {
 
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
-    let (_state, seeded_query) = inspire::pir::query_seeded(
-        &crs,
-        42,
-        &encoded_db.config,
-        &rlwe_sk,
-        &mut sampler,
-    )
-    .unwrap();
+    let (_state, seeded_query) =
+        inspire::pir::query_seeded(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
 
     let json = serde_json::to_string(&seeded_query).unwrap();
     let recovered: SeededClientQuery = serde_json::from_str(&json).unwrap();

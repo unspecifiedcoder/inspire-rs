@@ -149,7 +149,11 @@ impl fmt::Display for CostBreakdown {
                 )?;
             }
             if ops.external_products > 0 {
-                writeln!(f, "    External products:      {:>8}", ops.external_products)?;
+                writeln!(
+                    f,
+                    "    External products:      {:>8}",
+                    ops.external_products
+                )?;
             }
             if ops.key_switches > 0 {
                 writeln!(f, "    Key-switches:           {:>8}", ops.key_switches)?;
@@ -240,8 +244,7 @@ impl CostEstimator {
 
     /// Size of one RLWE ciphertext in bytes: 2 polynomials x d coefficients x CRT limbs x 8 bytes.
     fn rlwe_bytes(&self) -> u64 {
-        2u64
-            .saturating_mul(self.params.ring_dim as u64)
+        2u64.saturating_mul(self.params.ring_dim as u64)
             .saturating_mul(self.crt_moduli_count())
             .saturating_mul(8)
     }
@@ -573,10 +576,7 @@ mod tests {
         // Per node: 4 + 2*l = 10 poly_muls, so 2047 * 10 = 20470
         assert_eq!(breakdown.packing.poly_multiplications, 2047 * 10);
         // Per node: 6 + 2*l = 12 poly_adds, so 2047*12 + 2048 finalize = 26612
-        assert_eq!(
-            breakdown.packing.poly_additions,
-            2047 * 12 + 2048
-        );
+        assert_eq!(breakdown.packing.poly_additions, 2047 * 12 + 2048);
 
         // Communication: full RGSW + single packed RLWE (no packing keys for tree mode)
         let crt_limbs = params.crt_moduli.len().max(1) as u64;
