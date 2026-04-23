@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::inspiring::{packing_online, packing_online_fully_ntt};
 use crate::math::Poly;
 use crate::params::InspireVariant;
-use crate::rgsw::{external_product, external_product_with_ntt_rgsw, rgsw_rows_to_ntt};
+use crate::rgsw::{external_product_with_ntt_rgsw, rgsw_rows_to_ntt};
 use crate::rlwe::RlweCiphertext;
 
 use super::error::{pir_err, Result};

@@ -50,13 +50,6 @@
 //! > the intrinsic calls well-defined IFF the runtime feature gate is
 //! > satisfied.
 //!
-//! Individual `unsafe { _mm512_* }` blocks inside the SIMD functions
-//! are Rust-mandatory for calling intrinsics whose feature set is
-//! statically guaranteed by the enclosing `#[target_feature]`.
-//! Newer rustc (2024 edition) treats these as redundant + emits
-//! "unnecessary `unsafe` block" warnings; the module retains them
-//! for MSRV compatibility with 1.85. Cargo fix can strip them once
-//! the crate moves to edition 2024.
 //!
 //! On wasm32 and non-x86_64 targets the `avx512_ifma` submodule is
 //! `#[cfg(target_arch = "x86_64")]`-gated off; the scalar
@@ -206,11 +199,13 @@ pub mod avx512_ifma {
     //! `is_x86_feature_detected!("avx512ifma")` before invoking these
     //! routines. Scalar fallback at `super::mont_mul_split52`.
     //!
-    //! All entry points are `unsafe` because they call target-feature-
-    //! gated intrinsics. The safety invariant is: the host CPU has the
-    //! `avx512ifma` feature enabled at runtime.
+    //! All entry points are `unsafe fn` with `#[target_feature(...)]`.
+    //! The single safety invariant for the entire module is: the host
+    //! CPU must have the `avx512f` + `avx512ifma` features enabled at
+    //! runtime. Intrinsic calls inside these functions do not need their
+    //! own `unsafe { }` wrappers — the enclosing `unsafe fn` is the
+    //! one safety boundary.
 
-    use super::*;
     use std::arch::x86_64::*;
 
     const MASK52_VEC: u64 = (1u64 << 52) - 1;
@@ -232,25 +227,25 @@ pub mod avx512_ifma {
         q_vec: __m512i,
         q_inv_neg_vec: __m512i,
     ) -> __m512i {
-        let mask52 = unsafe { _mm512_set1_epi64(MASK52_VEC as i64) };
+        let mask52 = _mm512_set1_epi64(MASK52_VEC as i64);
 
         // Split operands.
-        let a_lo = unsafe { _mm512_and_si512(a, mask52) };
-        let a_hi = unsafe { _mm512_srli_epi64::<52>(a) };
-        let b_lo = unsafe { _mm512_and_si512(b, mask52) };
-        let b_hi = unsafe { _mm512_srli_epi64::<52>(b) };
+        let a_lo = _mm512_and_si512(a, mask52);
+        let a_hi = _mm512_srli_epi64::<52>(a);
+        let b_lo = _mm512_and_si512(b, mask52);
+        let b_hi = _mm512_srli_epi64::<52>(b);
 
-        let zero = unsafe { _mm512_setzero_si512() };
+        let zero = _mm512_setzero_si512();
 
         // Partial products via IFMA52. Each madd52{lo,hi} takes acc +
         // (a52 * b52)[_52..52+52 or 52+52..52+52+52].
-        let p00_lo = unsafe { _mm512_madd52lo_epu64(zero, a_lo, b_lo) };
-        let p00_hi = unsafe { _mm512_madd52hi_epu64(zero, a_lo, b_lo) };
-        let p10_lo = unsafe { _mm512_madd52lo_epu64(zero, a_hi, b_lo) };
-        let p10_hi = unsafe { _mm512_madd52hi_epu64(zero, a_hi, b_lo) };
-        let p01_lo = unsafe { _mm512_madd52lo_epu64(zero, a_lo, b_hi) };
-        let p01_hi = unsafe { _mm512_madd52hi_epu64(zero, a_lo, b_hi) };
-        let p11_lo = unsafe { _mm512_madd52lo_epu64(zero, a_hi, b_hi) };
+        let p00_lo = _mm512_madd52lo_epu64(zero, a_lo, b_lo);
+        let p00_hi = _mm512_madd52hi_epu64(zero, a_lo, b_lo);
+        let p10_lo = _mm512_madd52lo_epu64(zero, a_hi, b_lo);
+        let p10_hi = _mm512_madd52hi_epu64(zero, a_hi, b_lo);
+        let p01_lo = _mm512_madd52lo_epu64(zero, a_lo, b_hi);
+        let p01_hi = _mm512_madd52hi_epu64(zero, a_lo, b_hi);
+        let p11_lo = _mm512_madd52lo_epu64(zero, a_hi, b_hi);
 
         // Assemble 120-bit product per lane into (ab_lo, ab_hi).
         //
@@ -259,44 +254,38 @@ pub mod avx512_ifma {
         // cross_mid = p00_hi + p10_lo + p01_lo (up to 53 bits per lane)
         // cross_mid_lo52 = cross_mid & mask52
         // cross_mid_carry = cross_mid >> 52
-        let cross_mid = unsafe {
-            _mm512_add_epi64(
-                _mm512_add_epi64(p00_hi, p10_lo),
-                p01_lo,
-            )
-        };
-        let cross_mid_lo52 = unsafe { _mm512_and_si512(cross_mid, mask52) };
-        let cross_mid_carry = unsafe { _mm512_srli_epi64::<52>(cross_mid) };
+        let cross_mid = _mm512_add_epi64(
+            _mm512_add_epi64(p00_hi, p10_lo),
+            p01_lo,
+        );
+        let cross_mid_lo52 = _mm512_and_si512(cross_mid, mask52);
+        let cross_mid_carry = _mm512_srli_epi64::<52>(cross_mid);
 
         // upper_9 = p10_hi + p01_hi + cross_mid_carry (up to 10 bits per lane)
-        let upper_9 = unsafe {
-            _mm512_add_epi64(
-                _mm512_add_epi64(p10_hi, p01_hi),
-                cross_mid_carry,
-            )
-        };
-        let mask8 = unsafe { _mm512_set1_epi64(0xFFi64) };
-        let p11_low8 = unsafe { _mm512_and_si512(p11_lo, mask8) };
-        let p11_high = unsafe { _mm512_srli_epi64::<8>(p11_lo) };
+        let upper_9 = _mm512_add_epi64(
+            _mm512_add_epi64(p10_hi, p01_hi),
+            cross_mid_carry,
+        );
+        let mask8 = _mm512_set1_epi64(0xFFi64);
+        let p11_low8 = _mm512_and_si512(p11_lo, mask8);
+        let p11_high = _mm512_srli_epi64::<8>(p11_lo);
 
         // ab_lo: bits [63:0] = p00_lo | (cross_mid_lo52 << 52)
-        let cross_mid_shifted = unsafe { _mm512_slli_epi64::<52>(cross_mid_lo52) };
-        let ab_lo = unsafe { _mm512_or_si512(p00_lo, cross_mid_shifted) };
+        let cross_mid_shifted = _mm512_slli_epi64::<52>(cross_mid_lo52);
+        let ab_lo = _mm512_or_si512(p00_lo, cross_mid_shifted);
 
         // ab_hi: see scalar reference for bit positioning.
         // ab_hi = (cross_mid_lo52 >> 12)
         //       + ((upper_9 + p11_low8) << 40)
         //       + (p11_high << 48)
-        let cm_top = unsafe { _mm512_srli_epi64::<12>(cross_mid_lo52) };
-        let upper_plus_low = unsafe { _mm512_add_epi64(upper_9, p11_low8) };
-        let upper_shifted = unsafe { _mm512_slli_epi64::<40>(upper_plus_low) };
-        let p11_hi_shifted = unsafe { _mm512_slli_epi64::<48>(p11_high) };
-        let ab_hi = unsafe {
-            _mm512_add_epi64(
-                _mm512_add_epi64(cm_top, upper_shifted),
-                p11_hi_shifted,
-            )
-        };
+        let cm_top = _mm512_srli_epi64::<12>(cross_mid_lo52);
+        let upper_plus_low = _mm512_add_epi64(upper_9, p11_low8);
+        let upper_shifted = _mm512_slli_epi64::<40>(upper_plus_low);
+        let p11_hi_shifted = _mm512_slli_epi64::<48>(p11_high);
+        let ab_hi = _mm512_add_epi64(
+            _mm512_add_epi64(cm_top, upper_shifted),
+            p11_hi_shifted,
+        );
 
         // Montgomery REDC (scalar per lane): m = ab_lo * q_inv_neg mod 2^64
         //                                    t = (ab + m * q) >> 64
@@ -308,71 +297,63 @@ pub mod avx512_ifma {
         // 64 of a 128-bit value.
         //
         // Use split-52 multiply for (m * q) as well:
-        let m = unsafe { _mm512_mullo_epi64(ab_lo, q_inv_neg_vec) };
-        let m_lo = unsafe { _mm512_and_si512(m, mask52) };
-        let m_hi = unsafe { _mm512_srli_epi64::<52>(m) };
-        let q_lo = unsafe { _mm512_and_si512(q_vec, mask52) };
-        let q_hi = unsafe { _mm512_srli_epi64::<52>(q_vec) };
+        let m = _mm512_mullo_epi64(ab_lo, q_inv_neg_vec);
+        let m_lo = _mm512_and_si512(m, mask52);
+        let m_hi = _mm512_srli_epi64::<52>(m);
+        let q_lo = _mm512_and_si512(q_vec, mask52);
+        let q_hi = _mm512_srli_epi64::<52>(q_vec);
 
-        let mq_p00_lo = unsafe { _mm512_madd52lo_epu64(zero, m_lo, q_lo) };
-        let mq_p00_hi = unsafe { _mm512_madd52hi_epu64(zero, m_lo, q_lo) };
-        let mq_p10_lo = unsafe { _mm512_madd52lo_epu64(zero, m_hi, q_lo) };
-        let mq_p10_hi = unsafe { _mm512_madd52hi_epu64(zero, m_hi, q_lo) };
-        let mq_p01_lo = unsafe { _mm512_madd52lo_epu64(zero, m_lo, q_hi) };
-        let mq_p01_hi = unsafe { _mm512_madd52hi_epu64(zero, m_lo, q_hi) };
-        let mq_p11_lo = unsafe { _mm512_madd52lo_epu64(zero, m_hi, q_hi) };
+        let mq_p00_lo = _mm512_madd52lo_epu64(zero, m_lo, q_lo);
+        let mq_p00_hi = _mm512_madd52hi_epu64(zero, m_lo, q_lo);
+        let mq_p10_lo = _mm512_madd52lo_epu64(zero, m_hi, q_lo);
+        let mq_p10_hi = _mm512_madd52hi_epu64(zero, m_hi, q_lo);
+        let mq_p01_lo = _mm512_madd52lo_epu64(zero, m_lo, q_hi);
+        let mq_p01_hi = _mm512_madd52hi_epu64(zero, m_lo, q_hi);
+        let mq_p11_lo = _mm512_madd52lo_epu64(zero, m_hi, q_hi);
 
-        let mq_cross_mid = unsafe {
-            _mm512_add_epi64(
-                _mm512_add_epi64(mq_p00_hi, mq_p10_lo),
-                mq_p01_lo,
-            )
-        };
-        let mq_cross_mid_lo52 = unsafe { _mm512_and_si512(mq_cross_mid, mask52) };
-        let mq_cross_mid_carry = unsafe { _mm512_srli_epi64::<52>(mq_cross_mid) };
+        let mq_cross_mid = _mm512_add_epi64(
+            _mm512_add_epi64(mq_p00_hi, mq_p10_lo),
+            mq_p01_lo,
+        );
+        let mq_cross_mid_lo52 = _mm512_and_si512(mq_cross_mid, mask52);
+        let mq_cross_mid_carry = _mm512_srli_epi64::<52>(mq_cross_mid);
 
-        let mq_upper_9 = unsafe {
-            _mm512_add_epi64(
-                _mm512_add_epi64(mq_p10_hi, mq_p01_hi),
-                mq_cross_mid_carry,
-            )
-        };
-        let mq_p11_low8 = unsafe { _mm512_and_si512(mq_p11_lo, mask8) };
-        let mq_p11_high = unsafe { _mm512_srli_epi64::<8>(mq_p11_lo) };
+        let mq_upper_9 = _mm512_add_epi64(
+            _mm512_add_epi64(mq_p10_hi, mq_p01_hi),
+            mq_cross_mid_carry,
+        );
+        let mq_p11_low8 = _mm512_and_si512(mq_p11_lo, mask8);
+        let mq_p11_high = _mm512_srli_epi64::<8>(mq_p11_lo);
 
-        let mq_cm_shifted = unsafe { _mm512_slli_epi64::<52>(mq_cross_mid_lo52) };
-        let mq_lo = unsafe { _mm512_or_si512(mq_p00_lo, mq_cm_shifted) };
+        let mq_cm_shifted = _mm512_slli_epi64::<52>(mq_cross_mid_lo52);
+        let mq_lo = _mm512_or_si512(mq_p00_lo, mq_cm_shifted);
 
-        let mq_cm_top = unsafe { _mm512_srli_epi64::<12>(mq_cross_mid_lo52) };
-        let mq_upper_plus_low = unsafe { _mm512_add_epi64(mq_upper_9, mq_p11_low8) };
-        let mq_upper_shifted = unsafe { _mm512_slli_epi64::<40>(mq_upper_plus_low) };
-        let mq_p11_hi_shifted = unsafe { _mm512_slli_epi64::<48>(mq_p11_high) };
-        let mq_hi = unsafe {
-            _mm512_add_epi64(
-                _mm512_add_epi64(mq_cm_top, mq_upper_shifted),
-                mq_p11_hi_shifted,
-            )
-        };
+        let mq_cm_top = _mm512_srli_epi64::<12>(mq_cross_mid_lo52);
+        let mq_upper_plus_low = _mm512_add_epi64(mq_upper_9, mq_p11_low8);
+        let mq_upper_shifted = _mm512_slli_epi64::<40>(mq_upper_plus_low);
+        let mq_p11_hi_shifted = _mm512_slli_epi64::<48>(mq_p11_high);
+        let mq_hi = _mm512_add_epi64(
+            _mm512_add_epi64(mq_cm_top, mq_upper_shifted),
+            mq_p11_hi_shifted,
+        );
 
         // Compute (ab_lo + mq_lo) per lane, capture carry into mq_hi.
         // AVX-512 has no direct "add with carry" — emulate via
         // (ab_lo + mq_lo) < ab_lo test for carry.
-        let sum_lo = unsafe { _mm512_add_epi64(ab_lo, mq_lo) };
-        let carry_mask = unsafe { _mm512_cmplt_epu64_mask(sum_lo, ab_lo) };
-        let one = unsafe { _mm512_set1_epi64(1i64) };
-        let carry = unsafe { _mm512_maskz_mov_epi64(carry_mask, one) };
+        let sum_lo = _mm512_add_epi64(ab_lo, mq_lo);
+        let carry_mask = _mm512_cmplt_epu64_mask(sum_lo, ab_lo);
+        let one = _mm512_set1_epi64(1i64);
+        let carry = _mm512_maskz_mov_epi64(carry_mask, one);
 
         // t = ab_hi + mq_hi + carry
-        let t = unsafe {
-            _mm512_add_epi64(
-                _mm512_add_epi64(ab_hi, mq_hi),
-                carry,
-            )
-        };
+        let t = _mm512_add_epi64(
+            _mm512_add_epi64(ab_hi, mq_hi),
+            carry,
+        );
 
         // Conditional subtract: if t >= q then t -= q
-        let ge_mask = unsafe { _mm512_cmpge_epu64_mask(t, q_vec) };
-        unsafe { _mm512_mask_sub_epi64(t, ge_mask, t, q_vec) }
+        let ge_mask = _mm512_cmpge_epu64_mask(t, q_vec);
+        _mm512_mask_sub_epi64(t, ge_mask, t, q_vec)
     }
 
     /// Pointwise Montgomery multiply of two standard-form coefficient
@@ -395,14 +376,14 @@ pub mod avx512_ifma {
         assert_eq!(a.len(), result.len());
         assert_eq!(a.len() % 8, 0, "array length must be multiple of 8");
 
-        let q_vec = unsafe { _mm512_set1_epi64(q as i64) };
-        let q_inv_neg_vec = unsafe { _mm512_set1_epi64(q_inv_neg as i64) };
+        let q_vec = _mm512_set1_epi64(q as i64);
+        let q_inv_neg_vec = _mm512_set1_epi64(q_inv_neg as i64);
 
         for i in (0..a.len()).step_by(8) {
-            let av = unsafe { _mm512_loadu_si512(a[i..].as_ptr().cast()) };
-            let bv = unsafe { _mm512_loadu_si512(b[i..].as_ptr().cast()) };
-            let rv = unsafe { mont_mul_split52_x8(av, bv, q_vec, q_inv_neg_vec) };
-            unsafe { _mm512_storeu_si512(result[i..].as_mut_ptr().cast(), rv) };
+            let av = _mm512_loadu_si512(a[i..].as_ptr().cast());
+            let bv = _mm512_loadu_si512(b[i..].as_ptr().cast());
+            let rv = mont_mul_split52_x8(av, bv, q_vec, q_inv_neg_vec);
+            _mm512_storeu_si512(result[i..].as_mut_ptr().cast(), rv);
         }
     }
 }

@@ -20,8 +20,8 @@
 use raven_inspire::math::GaussianSampler;
 use raven_inspire::params::{InspireParams, SecurityLevel};
 use raven_inspire::{
-    extract_inspiring, query, query_seeded, respond, respond_seeded_inspiring, setup, ClientQuery,
-    PackingMode, SeededClientQuery, ServerResponse, ServerSessionHandle,
+    extract_inspiring, query, query_seeded, respond, respond_seeded_inspiring, setup,
+    PackingMode, ServerResponse, ServerSessionHandle,
 };
 
 /// Small params for fast roundtrip tests.

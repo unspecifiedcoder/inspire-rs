@@ -211,7 +211,7 @@ fn phase_b_handshake_roundtrip_byte_equal_to_inlined_keys() {
     let session_store = ServerSessionStore::new();
 
     // Inlined-keys baseline (pre-handshake wire format).
-    let mut session_inline =
+    let session_inline =
         ClientSession::new(crs.clone(), rlwe_sk.clone(), &mut sampler).unwrap();
     assert!(session_inline.session_handle().is_none());
 

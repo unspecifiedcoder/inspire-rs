@@ -9,7 +9,6 @@
 //! Runs under `cargo test --release`. Gated behind `RAVEN_MICROBENCH=1`
 //! env var so it does not fire during the regular regression runs.
 
-use raven_inspire::math::mod_q::DEFAULT_Q;
 use raven_inspire::math::ntt::NttContext;
 
 use std::time::Instant;

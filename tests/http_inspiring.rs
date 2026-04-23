@@ -1,3 +1,4 @@
+#![allow(unexpected_cfgs)]
 #![cfg(feature = "server")]
 
 use std::net::SocketAddr;

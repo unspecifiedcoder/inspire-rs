@@ -6,7 +6,7 @@
 //! Integration gate: byte-identity required before wiring into the
 //! respond hot path.
 
-use raven_inspire::math::{GaussianSampler, NttContext, Poly};
+use raven_inspire::math::{GaussianSampler, Poly};
 use raven_inspire::params::InspireParams;
 use raven_inspire::rgsw::{
     external_product, external_product_with_ntt_rgsw, rgsw_rows_to_ntt, GadgetVector,
