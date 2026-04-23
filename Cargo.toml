@@ -1,31 +1,39 @@
-[package]
-name = "inspire"
-version = "0.2.0"
-edition = "2021"
-description = "InsPIRe: Communication-Efficient PIR with Server-side Preprocessing"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/igor53627/inspire-rs"
-homepage = "https://github.com/igor53627/inspire-rs"
-documentation = "https://docs.rs/inspire"
-readme = "README.md"
-keywords = ["pir", "homomorphic", "cryptography", "inspire"]
-categories = ["cryptography", "network-programming"]
+# Standalone — see top-level Cargo.toml for why it's not a workspace member.
+# This crate ships the library-only surface used by the B1 adapter. Upstream
+# shipped server/CLI/ethereum-db/mmap scaffolding; the Raven fork stripped
+# that surface because (a) the B1 adapter consumes only the library, and
+# (b) those modules carry transitive tokio/axum/reqwest deps that break
+# wasm32-unknown-unknown. Detached workspace; built explicitly with:
+#   cargo build --manifest-path crates/raven-inspire/Cargo.toml --release
+[workspace]
 
-[features]
-default = ["server", "cli", "zstd"]
-server = ["axum", "tokio", "memmap2", "reqwest"]
-cli = ["clap", "eyre", "tracing-subscriber", "indicatif"]
+[package]
+name = "raven-inspire"
+version = "0.1.0-alpha.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Raven's fork of inspire-rs (igor53627) with Raven-local patches for known upstream issues and client-side query-path caching."
+license = "Apache-2.0"
+authors = ["Raven contributors", "Original inspire-rs authors (see UPSTREAM.md)"]
+publish = false
+readme = "README.md"
+
+# Lint posture: adapter code calls into ported upstream APIs. The upstream
+# code uses .unwrap() / panic! in several places; we relax these lints to
+# match upstream's posture rather than edit every call site. Raven-local
+# new code should still use typed errors.
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+unwrap_used = "allow"
+expect_used = "allow"
+panic = "allow"
+pedantic = "allow"
+all = "allow"
 
 [dependencies]
-# CLI (optional)
-clap = { version = "4.4", features = ["derive"], optional = true }
-eyre = { version = "0.6", optional = true }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
-
-# Web server (optional)
-axum = { version = "0.7", optional = true }
-tokio = { version = "1.36", features = ["full"], optional = true }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -36,70 +44,15 @@ byteorder = "1.5"
 # Parallelism
 rayon = "1.10"
 
-# Memory mapping (optional, not available in WASM)
-memmap2 = { version = "0.9", optional = true }
-
 # Cryptographic primitives
 rand = "0.8"
 rand_chacha = "0.3"
-
-# Progress (optional)
-indicatif = { version = "0.17", optional = true }
-
-# HTTP client (optional)
-reqwest = { version = "0.12", features = ["json"], optional = true }
 
 # Hex encoding
 hex = "0.4"
 
 # Bucket index (for setup)
 tiny-keccak = { version = "2.0", features = ["keccak"] }
-zstd = { version = "0.13", optional = true }
 
 [dev-dependencies]
 proptest = "1.4"
-criterion = { version = "0.5", features = ["html_reports"] }
-tempfile = "3.10"
-
-[[bench]]
-name = "ntt"
-harness = false
-
-[[bench]]
-name = "packing"
-harness = false
-
-[[bench]]
-name = "respond"
-harness = false
-
-[[bench]]
-name = "query_size_latency"
-harness = false
-
-[[bin]]
-name = "inspire-server"
-path = "src/bin/server.rs"
-required-features = ["server", "cli"]
-
-[[bin]]
-name = "inspire-client"
-path = "src/bin/client.rs"
-required-features = ["cli"]
-
-[[bin]]
-name = "inspire-setup"
-path = "src/bin/setup.rs"
-required-features = ["server", "cli"]
-
-[[test]]
-name = "e2e_pir"
-path = "tests/e2e_pir.rs"
-
-[[example]]
-name = "generate_test_data"
-path = "examples/generate_test_data.rs"
-
-[[example]]
-name = "cost_attribution"
-path = "examples/cost_attribution.rs"
