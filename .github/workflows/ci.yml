@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_DIR: /tmp/sccache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: true
+
+      - name: Test (quick PR path)
+        if: github.event_name == 'pull_request'
+        run: cargo test --all --lib --bins
+
+      - name: Test (full)
+        if: github.event_name != 'pull_request'
+        run: cargo test --all
+
+      - name: Bench (sizes only)
+        if: github.event_name != 'pull_request'
+        env:
+          INSPIRE_BENCH_SIZES_ONLY: "1"
+        run: cargo bench --bench query_size_latency
+
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: command -v sccache >/dev/null && sccache --show-stats || true
+
+  commit-msg-lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Normalizer self-tests
+        run: ./scripts/normalize-commit-msg.sh --test
+
+      - name: Validate PR commit messages
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          git cat-file -e "${base}^{commit}"
+          git cat-file -e "${head}^{commit}"
+
+          # Validator self-tests to prevent lint policy regressions.
+          should_pass() { ./scripts/validate-commit-msg.sh --quiet -- "$1"; }
+          should_fail() { if ./scripts/validate-commit-msg.sh --quiet -- "$1"; then echo "Expected to fail: $1"; exit 1; fi; }
+          should_pass "feat: add linting"
+          should_pass "fix(ci)!: tighten checks"
+          should_pass "Merge branch 'main' into feature/x"
+          should_pass "Revert \"feat: add linting\""
+          should_pass "fixup! feat: add linting"
+          should_pass "a11y: improve screen reader support"
+          should_pass "a11y(nav)!: rewrite tab order"
+          should_fail "bad message"
+          should_fail "feat add linting"
+          should_fail "--help"
+          should_fail "-h"
+
+          # Subject-line length limits: >100 chars must fail.
+          long_ok="feat: $(printf 'x%.0s' $(seq 1 90))"
+          should_pass "$long_ok"
+          long_bad="feat: $(printf 'x%.0s' $(seq 1 95))"
+          should_fail "$long_bad"
+
+          failed=0
+          while IFS= read -r msg; do
+            if ./scripts/validate-commit-msg.sh --quiet -- "$msg"; then
+              continue
+            fi
+            echo "BAD: $msg"
+            failed=1
+          done < <(git log --format='%s' "$base".."$head")
+          if [ "$failed" -eq 1 ]; then
+            echo ""
+            echo "Commit messages must follow Conventional Commits: <type>[(<scope>)][!]: <description>"
+            echo "Types: feat, fix, docs, chore, refactor, test, ci, style, perf, build, a11y"
+            echo "Subject line: max 100 chars (warning at >72)"
+            exit 1
+          fi
+
+  clippy:
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_DIR: /tmp/sccache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: true
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -W clippy::all
+
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: command -v sccache >/dev/null && sccache --show-stats || true
+
+  roadmap-entropy:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Roadmap entropy check
+        run: scripts/roadmap-entropy.sh --json
