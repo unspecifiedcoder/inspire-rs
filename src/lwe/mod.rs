@@ -30,9 +30,9 @@
 //! # Example
 //!
 //! ```
-//! use inspire::lwe::{LweSecretKey, LweCiphertext};
-//! use inspire::math::GaussianSampler;
-//! use inspire::math::mod_q::DEFAULT_Q;
+//! use raven_inspire::lwe::{LweSecretKey, LweCiphertext};
+//! use raven_inspire::math::GaussianSampler;
+//! use raven_inspire::math::mod_q::DEFAULT_Q;
 //!
 //! let mut sampler = GaussianSampler::new(3.2);
 //! let sk = LweSecretKey::generate(256, DEFAULT_Q, &mut sampler);

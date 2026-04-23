@@ -89,18 +89,31 @@ pub fn extract_with_variant(
 
 /// Extract from TwoPacking response (InsPIRe^2)
 ///
-/// TwoPacking uses the same packed response format as OnePacking in this
-/// implementation: column values are placed at coefficients 0..num_cols.
+/// Raven-local patch: dispatches on the server's `packing_mode` tag.
+/// The pre-fork code always called `extract_packed` (tree-packed,
+/// d-scaled format), but the upstream binary bypassed
+/// `extract_with_variant` entirely for InspiRING-shaped responses
+/// because the tree-packed extractor silently decoded wrong bytes.
+/// The fork adds a tagged response type (`ServerResponse::packing_mode`)
+/// so a single dispatch does the right thing:
 ///
-/// If the server switches to InspiRING packing for TwoPacking, this function
-/// can be updated to call `extract_inspiring` instead.
+/// - `Some(PackingMode::Inspiring)` → `extract_inspiring` (no d-scaling)
+/// - `Some(PackingMode::Tree)` or `None` (legacy) → `extract_packed`
+///
+/// `None` preserves the legacy tree-packed behavior for any
+/// serialized response produced by pre-fork `inspire-rs` or third-party
+/// tooling that hasn't adopted the tag yet.
 pub fn extract_two_packing(
     crs: &InspireCrs,
     state: &ClientState,
     response: &ServerResponse,
     entry_size: usize,
 ) -> Result<Vec<u8>> {
-    extract_packed(crs, state, response, entry_size)
+    use crate::pir::query::PackingMode;
+    match response.packing_mode {
+        Some(PackingMode::Inspiring) => extract_inspiring(crs, state, response, entry_size),
+        Some(PackingMode::Tree) | None => extract_packed(crs, state, response, entry_size),
+    }
 }
 
 /// Extract from OnePacking response (InsPIRe^1)
@@ -129,9 +142,15 @@ fn extract_packed(
         .decrypt(&state.rlwe_secret_key, delta, p, &ctx);
 
     // Extract column values from their positions
-    // Values are scaled by d from tree packing, need to divide
-    // Note: d_inv only exists if gcd(d, p) = 1. For d=256, p=65536, this fails.
-    // In practice, this limits column values to < p/d to avoid overflow.
+    // Values are scaled by d from tree packing, need to divide.
+    // `d_inv` only exists if gcd(d, p) = 1. For d=256, p=65536 that
+    // fails; for the shipping config (d=2048, p=65537 Fermat F4) it
+    // holds. Invariant enforcement is moved up to
+    // `ServerCrs::new_validated` so this path can
+    // assume `gcd(d, p) == 1` and the inverse exists; the
+    // `.unwrap_or(1)` fallback is retained as a non-panicking defensive
+    // guard for any caller that bypassed validation (e.g., older test
+    // harnesses still using raw `ServerCrs` construction).
     let d_inv = mod_inverse(d as u64, p).unwrap_or(1);
 
     let mut column_values = Vec::with_capacity(num_columns);

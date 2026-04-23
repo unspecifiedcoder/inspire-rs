@@ -16,8 +16,8 @@
 //! # Example
 //!
 //! ```
-//! use inspire::math::{Poly, NttContext};
-//! use inspire::math::mod_q::DEFAULT_Q;
+//! use raven_inspire::math::{Poly, NttContext};
+//! use raven_inspire::math::mod_q::DEFAULT_Q;
 //!
 //! let ctx = NttContext::with_default_q(256);
 //!
@@ -53,8 +53,8 @@ use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 /// # Example
 ///
 /// ```
-/// use inspire::math::Poly;
-/// use inspire::math::mod_q::DEFAULT_Q;
+/// use raven_inspire::math::Poly;
+/// use raven_inspire::math::mod_q::DEFAULT_Q;
 ///
 /// let poly = Poly::constant(42, 256, DEFAULT_Q);
 /// assert_eq!(poly.coeff(0), 42);
@@ -78,6 +78,10 @@ pub struct Poly {
 
 impl Poly {
     fn init_moduli(moduli: &[u64]) -> (Vec<u64>, u64, u64) {
+        // Internal invariant: `InspireParams::validate()` rejects
+        // `crt_moduli.len() > 2` at parameter-construction time.
+        // Converting to `Result` would cascade through 20+ public
+        // Poly constructors, so this remains a panic.
         assert!(!moduli.is_empty(), "moduli must be non-empty");
         if moduli.len() > 2 {
             panic!("CRT with more than 2 moduli not supported");
@@ -143,6 +147,7 @@ impl Poly {
                 crt_coeffs[i + dim] = c1;
             }
         } else {
+            // Same invariant as init_moduli.
             panic!("CRT with more than 2 moduli not supported");
         }
 
@@ -180,6 +185,41 @@ impl Poly {
         };
         p.reduce();
         p
+    }
+
+    /// Create polynomial from CRT-residue coefficients, skipping the
+    /// final `reduce()` pass.
+    ///
+    /// Callers that produce coefficients already guaranteed to be in
+    /// `[0, moduli[m])` per-limb can avoid the ~6k modulo operations
+    /// that `from_crt_coeffs` performs. Gadget decomposition at
+    /// base = 2^20 is a prime example: every output digit is masked
+    /// by `(1 << 20) - 1` and therefore < 2^20 < DEFAULT_Q.
+    ///
+    /// # Safety (contract)
+    ///
+    /// Caller MUST ensure every coefficient satisfies the per-limb
+    /// reduction invariant (`coeffs[m * dim + j] < moduli[m]`). Passing
+    /// values ≥ moduli[m] produces a `Poly` in an inconsistent state
+    /// that downstream operations may misinterpret. Not marked `unsafe`
+    /// because no memory-safety violation results — the contract is
+    /// logical correctness only.
+    pub fn from_crt_coeffs_reduced(coeffs: Vec<u64>, moduli: &[u64]) -> Self {
+        let (moduli_vec, q, inv) = Self::init_moduli(moduli);
+        let crt_count = moduli_vec.len();
+        assert!(
+            coeffs.len().is_multiple_of(crt_count),
+            "CRT coeffs length must be a multiple of crt_count"
+        );
+        let dim = coeffs.len() / crt_count;
+        Self {
+            coeffs,
+            moduli: moduli_vec,
+            q,
+            dim,
+            crt_q0_inv_mod_q1: inv,
+            is_ntt: false,
+        }
     }
 
     /// Create polynomial from coefficients with default modulus
@@ -355,7 +395,12 @@ impl Poly {
         self.is_ntt = false;
     }
 
-    /// Get coefficient at index (only valid if not in NTT domain)
+    /// Get coefficient at index (only valid if not in NTT domain).
+    ///
+    /// `#[inline]` so callers in hot loops whose `self.moduli.len()`
+    /// is statically 1 compile down to a direct `self.coeffs[i]` load,
+    /// skipping the match entirely.
+    #[inline]
     pub fn coeff(&self, i: usize) -> u64 {
         assert!(!self.is_ntt, "Cannot access coefficients in NTT domain");
         match self.moduli.len() {
@@ -367,11 +412,16 @@ impl Poly {
                 let a1 = self.coeffs[i + self.dim];
                 crt_compose_2(a0, a1, q0, q1, self.crt_q0_inv_mod_q1) % self.q
             }
-            _ => panic!("CRT with more than 2 moduli not supported"),
+            _ => panic!(
+                "CRT with more than 2 moduli not supported"
+            ),
         }
     }
 
-    /// Set coefficient at index (only valid if not in NTT domain)
+    /// Set coefficient at index (only valid if not in NTT domain).
+    ///
+    /// `#[inline]` gate matches `coeff()` above.
+    #[inline]
     pub fn set_coeff(&mut self, i: usize, value: u64) {
         assert!(!self.is_ntt, "Cannot set coefficients in NTT domain");
         match self.moduli.len() {
@@ -383,7 +433,9 @@ impl Poly {
                 self.coeffs[i] = c0;
                 self.coeffs[i + self.dim] = c1;
             }
-            _ => panic!("CRT with more than 2 moduli not supported"),
+            _ => panic!(
+                "CRT with more than 2 moduli not supported"
+            ),
         }
     }
 
@@ -625,6 +677,90 @@ impl Poly {
                 let prod = ctx.pointwise_mul_single_at(a.coeffs[i], b.coeffs[i], m);
                 let sum = self.coeffs[i] + prod;
                 self.coeffs[i] = if sum >= modulus { sum - modulus } else { sum };
+            }
+        }
+    }
+
+    /// Fused 3-way multiply-accumulate in NTT domain with delayed
+    /// modular reduction:
+    /// `self += a0 * b0 + a1 * b1 + a2 * b2` (all NTT-domain pointwise).
+    ///
+    /// Equivalent to calling `mul_acc_ntt_domain` three times in
+    /// sequence; byte-identical output verified in
+    /// `tests/mul_acc3_ntt_domain_kat.rs`.
+    ///
+    /// Delayed modular reduction: backward recursion in
+    /// `inspiring::packing_offline` calls `mul_acc_ntt_domain` exactly
+    /// ℓ=3 times per iteration (one per gadget digit). Under the
+    /// shipping gadget config `(base = 2^20, len = 3)` on DEFAULT_Q,
+    /// each individual Montgomery product lies in `[0, q)` and
+    /// `q = 2^60 − 2^14 + 1`, so the accumulator
+    /// `self.coeffs[i] + p0 + p1 + p2` fits u64 (< 4q < 2^62 < 2^64)
+    /// and can be reduced in one pass at the end via up to 3
+    /// conditional subtracts. This collapses three per-coefficient
+    /// reduction chains into one, enables instruction-level parallelism
+    /// across the three independent multiplies, and saves two memory
+    /// writes per coefficient.
+    ///
+    /// # Requirements
+    /// - Every operand must be in NTT domain.
+    /// - Moduli must match across `self`, `a0/a1/a2`, `b0/b1/b2`.
+    /// - Every modulus `q_m` must satisfy `4 * q_m < 2^64`. For
+    ///   Raven's DEFAULT_Q (~2^60), this is always true.
+    ///
+    /// # Panics
+    /// On any of the requirement violations above.
+    pub fn mul_acc3_ntt_domain(
+        &mut self,
+        a0: &Self,
+        b0: &Self,
+        a1: &Self,
+        b1: &Self,
+        a2: &Self,
+        b2: &Self,
+        ctx: &NttContext,
+    ) {
+        assert!(
+            self.is_ntt
+                && a0.is_ntt
+                && b0.is_ntt
+                && a1.is_ntt
+                && b1.is_ntt
+                && a2.is_ntt
+                && b2.is_ntt,
+            "All polynomials must be in NTT domain"
+        );
+        assert_eq!(self.moduli, a0.moduli, "Moduli must match (a0)");
+        assert_eq!(self.moduli, b0.moduli, "Moduli must match (b0)");
+        assert_eq!(self.moduli, a1.moduli, "Moduli must match (a1)");
+        assert_eq!(self.moduli, b1.moduli, "Moduli must match (b1)");
+        assert_eq!(self.moduli, a2.moduli, "Moduli must match (a2)");
+        assert_eq!(self.moduli, b2.moduli, "Moduli must match (b2)");
+
+        for (m, &modulus) in self.moduli.iter().enumerate() {
+            assert!(
+                modulus < (1u64 << 62),
+                "mul_acc3_ntt_domain requires modulus < 2^62 to avoid u64 overflow"
+            );
+            let start = m * self.dim;
+            let end = start + self.dim;
+            for i in start..end {
+                let p0 = ctx.pointwise_mul_single_at(a0.coeffs[i], b0.coeffs[i], m);
+                let p1 = ctx.pointwise_mul_single_at(a1.coeffs[i], b1.coeffs[i], m);
+                let p2 = ctx.pointwise_mul_single_at(a2.coeffs[i], b2.coeffs[i], m);
+                // Accumulator < 4q < 2^62; reduce to [0, q) via up to
+                // three conditional subtracts.
+                let mut acc = self.coeffs[i] + p0 + p1 + p2;
+                if acc >= modulus {
+                    acc -= modulus;
+                }
+                if acc >= modulus {
+                    acc -= modulus;
+                }
+                if acc >= modulus {
+                    acc -= modulus;
+                }
+                self.coeffs[i] = acc;
             }
         }
     }

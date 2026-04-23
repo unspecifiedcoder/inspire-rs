@@ -18,7 +18,7 @@
 //! # Example
 //!
 //! ```
-//! use inspire::math::{Poly, NttContext};
+//! use raven_inspire::math::{Poly, NttContext};
 //!
 //! // Create a polynomial and convert to NTT domain
 //! let ctx = NttContext::with_default_q(256);
@@ -28,12 +28,19 @@
 
 pub mod crt;
 pub mod gaussian;
+// IFMA52 split-52 Montgomery infrastructure. Retained as library code
+// for (a) cross-check reference implementation used by Solinas KAT suite
+// (`tests/solinas_montgomery_kat.rs`); (b) future non-Solinas modulus
+// research (2-CRT 30-bit path, lazy Montgomery). The Solinas dispatch
+// supersedes it for the shipping single-prime DEFAULT_Q config.
+pub mod ifma52;
 pub mod mod_q;
 pub mod modular;
 pub mod ntt;
 pub mod poly;
 pub mod sampler;
 pub mod sampling;
+pub mod solinas_redc;
 
 pub use crt::{crt_compose_2, crt_decompose_2, crt_modulus, mod_inverse};
 pub use gaussian::GaussianSampler;

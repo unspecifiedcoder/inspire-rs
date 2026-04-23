@@ -72,6 +72,7 @@ fn seeded_query_with_gadget(
         rgsw_ciphertext,
         packing_mode,
         inspiring_packing_keys,
+        session_handle: None,
     };
 
     Ok((state, query))
@@ -106,6 +107,20 @@ pub struct ClientState {
     pub local_index: u64,
 }
 
+/// Opaque server-session identifier returned by
+/// [`crate::pir::ServerSessionStore::register`] after a client uploads its
+/// InspiRING packing keys once at session setup. Subsequent queries reference
+/// the handle instead of inlining the keys, closing the ~48 KiB per-query
+/// overhead that `inspiring_packing_keys` contributed under the pre-handshake
+/// wire format.
+///
+/// The integer is monotonically allocated and has no cryptographic meaning;
+/// security comes from the fact that uploading new keys creates a new handle
+/// and the server authorizes reads from its own map. Handles are NOT
+/// session secrets and MAY be logged.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ServerSessionHandle(pub u64);
+
 /// Client query sent to server
 ///
 /// Contains encrypted index information for PIR retrieval.
@@ -121,10 +136,22 @@ pub struct ClientQuery {
     /// Packing algorithm selection (default: InspiRING).
     #[serde(default)]
     pub packing_mode: PackingMode,
-    /// InspiRING client packing keys (optional, for InspiRING packing)
-    /// Contains y_body derived from the client's secret key and shared seeds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// InspiRING client packing keys (optional, for InspiRING packing).
+    /// Contains `y_body` derived from the client's secret key and shared seeds.
+    /// Mutually exclusive with `session_handle` in the handshake-aware path:
+    /// if a handle is set, the keys are resolved server-side from
+    /// [`crate::pir::ServerSessionStore`] and this field MUST be `None` so the
+    /// wire format stays compact.
+    #[serde(default)]
     pub inspiring_packing_keys: Option<ClientPackingKeys>,
+    /// Handshake extension: when the client has pre-uploaded its
+    /// `inspiring_packing_keys` to the server and received an opaque
+    /// session handle in return, subsequent queries reference the handle
+    /// here instead of inlining the keys. Fallback path: `None` +
+    /// `inspiring_packing_keys = Some(...)` preserves the pre-handshake
+    /// behavior for clients that haven't adopted the handshake yet.
+    #[serde(default)]
+    pub session_handle: Option<ServerSessionHandle>,
 }
 
 /// Seeded client query for network transmission
@@ -141,8 +168,11 @@ pub struct SeededClientQuery {
     #[serde(default)]
     pub packing_mode: PackingMode,
     /// InspiRING client packing keys (optional, for InspiRING packing)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub inspiring_packing_keys: Option<ClientPackingKeys>,
+    /// Handshake handle; see [`ClientQuery::session_handle`] for semantics.
+    #[serde(default)]
+    pub session_handle: Option<ServerSessionHandle>,
 }
 
 impl SeededClientQuery {
@@ -155,6 +185,7 @@ impl SeededClientQuery {
             rgsw_ciphertext: self.rgsw_ciphertext.expand(),
             packing_mode: self.packing_mode,
             inspiring_packing_keys: self.inspiring_packing_keys.clone(),
+            session_handle: self.session_handle,
         }
     }
 }
@@ -234,6 +265,7 @@ pub fn query(
         rgsw_ciphertext,
         packing_mode,
         inspiring_packing_keys,
+        session_handle: None,
     };
 
     Ok((state, query))

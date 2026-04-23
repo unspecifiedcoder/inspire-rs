@@ -240,8 +240,13 @@ pub fn pack_lwes_inner(
     let ks_idx = log_d - ell;
 
     if ks_idx >= automorph_keys.len() {
+        // Internal invariant. `ell` is bounded by the caller to
+        // `0..log_d`, so `ks_idx = log_d - ell ∈ [1, log_d]`. When
+        // callers supply a correctly-sized `automorph_keys` vector
+        // (length == log_d) the guard never fires. Retained as a
+        // defensive check.
         panic!(
-            "ks_idx {} out of bounds for {} automorph_keys",
+            "ks_idx {} out of bounds for {} automorph_keys (internal invariant violated)",
             ks_idx,
             automorph_keys.len()
         );

@@ -18,9 +18,9 @@
 //! # Example
 //!
 //! ```ignore
-//! use inspire::rlwe::{RlweSecretKey, RlweCiphertext};
-//! use inspire::params::InspireParams;
-//! use inspire::math::{Poly, GaussianSampler};
+//! use raven_inspire::rlwe::{RlweSecretKey, RlweCiphertext};
+//! use raven_inspire::params::InspireParams;
+//! use raven_inspire::math::{Poly, GaussianSampler};
 //!
 //! let params = InspireParams::default();
 //! let mut sampler = GaussianSampler::new(params.sigma);

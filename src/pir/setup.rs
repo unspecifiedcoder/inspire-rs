@@ -11,9 +11,9 @@
 //! # Example
 //!
 //! ```ignore
-//! use inspire::pir::setup;
-//! use inspire::params::InspireParams;
-//! use inspire::math::GaussianSampler;
+//! use raven_inspire::pir::setup;
+//! use raven_inspire::params::InspireParams;
+//! use raven_inspire::math::GaussianSampler;
 //!
 //! let params = InspireParams::secure_128_d2048();
 //! let database = vec![0u8; 1024 * 32]; // 1024 entries of 32 bytes
@@ -216,7 +216,7 @@ pub fn setup(
         &ctx,
     );
 
-    let shard_data = encode_database(database, entry_size, params, &shard_config);
+    let shard_data = encode_database(database, entry_size, params, &shard_config)?;
 
     let crs = ServerCrs {
         params: params.clone(),

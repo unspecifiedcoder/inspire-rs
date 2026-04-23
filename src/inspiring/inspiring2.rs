@@ -247,8 +247,15 @@ fn generate_automorph_tables(n: usize, moduli: &[u64], ctx: &NttContext) -> Vec<
                     break;
                 }
 
-                // table[j] = i means: to get automorphed[j], read from original[i]
-                table[found.unwrap()] = i;
+                // table[j] = i means: to get automorphed[j], read from original[i].
+                //
+                // `found.expect(...)` with invariant doc instead of
+                // bare `.unwrap()`. The `count != 1 → break` clause
+                // above guarantees `count == 1` here, so `found` must
+                // be `Some`.
+                table[found.expect(
+                    "generate_automorph_tables invariant: count == 1 implies found is Some",
+                )] = i;
             }
 
             if !must_redo {
@@ -280,17 +287,35 @@ pub fn apply_automorphism_ntt(poly_ntt: &Poly, table: &[usize]) -> Poly {
     debug_assert!(poly_ntt.is_ntt(), "Polynomial must be in NTT domain");
     let n = poly_ntt.dimension();
     let moduli = poly_ntt.moduli();
+    let crt_count = moduli.len();
 
-    let mut result_coeffs = vec![0u64; n];
+    // Raven-local patch (2-CRT correctness fix):
+    // The pre-fork code allocated `vec![0u64; n]` and copied only the
+    // first CRT limb, then handed the result to `from_coeffs_moduli`
+    // which interpreted those n u64s as composite values and CRT-
+    // decomposed them. Under single-prime moduli this was accidentally
+    // correct (decompose is a no-op when the value already fits in the
+    // single limb). Under 2-CRT the second limb was silently DROPPED,
+    // causing decryption to return random-looking bytes at every cell
+    // from d=256 up.
+    //
+    // Fix: apply the permutation to each CRT limb independently. The
+    // permutation is a FUNCTION of the NTT structure (ring dimension),
+    // not of the modulus, so the same table applies per limb.
+    let mut result_coeffs = vec![0u64; n * crt_count];
     let src = poly_ntt.coeffs();
 
-    // Apply permutation: result[i] = poly[table[i]]
-    for i in 0..n {
-        result_coeffs[i] = src[table[i]];
+    for m in 0..crt_count {
+        let offset = m * n;
+        for i in 0..n {
+            result_coeffs[offset + i] = src[offset + table[i]];
+        }
     }
 
-    let mut result = Poly::from_coeffs_moduli(result_coeffs, moduli);
-    // Mark as NTT domain (from_coeffs sets is_ntt = false)
+    // Use `from_crt_coeffs` because `result_coeffs` already holds pre-
+    // decomposed residues (one limb per CRT prime), not composite values.
+    let mut result = Poly::from_crt_coeffs(result_coeffs, moduli);
+    // Mark as NTT domain (from_crt_coeffs sets is_ntt = false).
     result.force_ntt_domain();
     result
 }
@@ -306,12 +331,18 @@ pub fn apply_automorphism_ntt_into(poly_ntt: &Poly, table: &[usize], out: &mut P
     debug_assert!(out.is_ntt(), "Output must be in NTT domain");
 
     let n = poly_ntt.dimension();
+    let crt_count = poly_ntt.moduli().len();
     let src = poly_ntt.coeffs();
     let dst = out.coeffs_mut();
 
-    // Apply permutation: out[i] = poly[table[i]]
-    for i in 0..n {
-        dst[i] = src[table[i]];
+    // Raven-local patch (2-CRT fix):
+    // Pre-fork loop wrote only the first CRT limb. See
+    // `apply_automorphism_ntt` for details.
+    for m in 0..crt_count {
+        let offset = m * n;
+        for i in 0..n {
+            dst[offset + i] = src[offset + table[i]];
+        }
     }
 }
 
@@ -329,18 +360,24 @@ pub fn apply_automorphism_ntt_double(
     debug_assert!(poly_ntt.is_ntt(), "Polynomial must be in NTT domain");
     let n = poly_ntt.dimension();
     let moduli = poly_ntt.moduli();
+    let crt_count = moduli.len();
 
-    let mut result_pos = vec![0u64; n];
-    let mut result_neg = vec![0u64; n];
+    // Raven-local patch (2-CRT fix): per-limb permutation instead of
+    // single-limb. See `apply_automorphism_ntt` for details.
+    let mut result_pos = vec![0u64; n * crt_count];
+    let mut result_neg = vec![0u64; n * crt_count];
     let src = poly_ntt.coeffs();
 
-    for i in 0..n {
-        result_pos[i] = src[table_pos[i]];
-        result_neg[i] = src[table_neg[i]];
+    for m in 0..crt_count {
+        let offset = m * n;
+        for i in 0..n {
+            result_pos[offset + i] = src[offset + table_pos[i]];
+            result_neg[offset + i] = src[offset + table_neg[i]];
+        }
     }
 
-    let mut poly_pos = Poly::from_coeffs_moduli(result_pos, moduli);
-    let mut poly_neg = Poly::from_coeffs_moduli(result_neg, moduli);
+    let mut poly_pos = Poly::from_crt_coeffs(result_pos, moduli);
+    let mut poly_neg = Poly::from_crt_coeffs(result_neg, moduli);
     poly_pos.force_ntt_domain();
     poly_neg.force_ntt_domain();
 
@@ -605,8 +642,14 @@ pub struct ClientPackingKeys {
     /// y_body: key-switching body for generator g
     /// y_body\[k\] = τ_g(s)·g^k - s·w_mask\[k\] + error
     pub y_body: Vec<Poly>,
-    /// z_body: key-switching body for conjugation h (full packing only)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// z_body: key-switching body for conjugation h (full packing only).
+    ///
+    /// `#[serde(default)]` alone (NOT paired with `skip_serializing_if`):
+    /// bincode is positional and a `skip_serializing_if` on a Vec field
+    /// makes the deserializer read the next field positionally and hit
+    /// unexpected-EOF for empty inputs. Always serialize the length
+    /// prefix, even when empty.
+    #[serde(default)]
     pub z_body: Vec<Poly>,
     /// Pre-rotated y_all = [τ_{g^0}(y_body), τ_{g^1}(y_body), ...] (coefficient form)
     /// This is what gets used in packing_online()
@@ -654,8 +697,8 @@ impl ClientPackingKeys {
 
         // Generate y_body = τ_g(s)·G - s·w_mask + error
         // Google uses gen_pows[1] which equals generator (g^1)
-        let gen = pack_params.gen_pows[1];
-        let y_body = generate_ksk_body(sk, gen, &pack_params.gadget, &w_mask, sampler, &ctx);
+        let gen_pow = pack_params.gen_pows[1];
+        let y_body = generate_ksk_body(sk, gen_pow, &pack_params.gadget, &w_mask, sampler, &ctx);
 
         // Convert y_body to NTT form for fast rotations
         let y_body_ntt: Vec<Poly> = y_body
@@ -731,8 +774,8 @@ impl ClientPackingKeys {
 
         // Generate y_body and z_body
         // Google uses gen_pows[1] for y_body, (2*poly_len - 1) for z_body
-        let gen = pack_params.gen_pows[1];
-        let y_body = generate_ksk_body(sk, gen, &pack_params.gadget, &w_mask, sampler, &ctx);
+        let gen_pow = pack_params.gen_pows[1];
+        let y_body = generate_ksk_body(sk, gen_pow, &pack_params.gadget, &w_mask, sampler, &ctx);
         let z_body = generate_ksk_body(
             sk,
             two_n - 1, // conjugation automorphism τ_{-1}
@@ -845,7 +888,7 @@ fn generate_mask_from_seed(
 /// - Uses NTT-domain multiplication for s·w_mask
 fn generate_ksk_body(
     sk: &RlweSecretKey,
-    gen: usize,
+    gen_pow: usize,
     gadget: &GadgetVector,
     w_mask: &[Poly],
     sampler: &mut GaussianSampler,
@@ -857,7 +900,7 @@ fn generate_ksk_body(
     let moduli = s.moduli();
 
     // τ_g(s) - automorphism of secret key
-    let tau_s = apply_automorphism(s, gen);
+    let tau_s = apply_automorphism(s, gen_pow);
 
     // Pre-convert s to NTT for efficient multiplication
     let mut s_ntt = s.clone();
@@ -945,44 +988,57 @@ pub fn packing_offline(
         })
         .collect();
 
-    // Step 1: Compute R[i] for each i in 0..γ
-    // All operations in NTT domain, using NTT-domain automorphisms
-    let mut r_all: Vec<Poly> = Vec::with_capacity(num_to_pack);
+    // Step 1: Compute R[i] for each i in 0..γ.
+    // Each iteration produces an independent r_all[i] and the
+    // r_all vector isn't read inside this loop (only the backward
+    // recursion below consumes it), so the O(γ²) work parallelizes
+    // cleanly via rayon. At γ=128 and 16-thread 9800X3D, the expected
+    // per-shard speedup approaches 16x on this region. The packing_offline
+    // region dominates server time (~73% at 2^20 × 256 B); parallelizing
+    // brings server_ms close to the throughput threshold.
+    use rayon::prelude::*;
+    let r_all: Vec<Poly> = (0..num_to_pack)
+        .into_par_iter()
+        .map(|i| {
+            // Inner product: Σ_j X^{j·g^{n-i}} · a_j (all in NTT domain)
+            let mut r_pow_i_ntt = Poly::zero_moduli(n, moduli);
+            r_pow_i_ntt.to_ntt(ctx);
 
-    for i in 0..num_to_pack {
-        // Inner product: Σ_j X^{j·g^{n-i}} · a_j (all in NTT domain)
-        let mut r_pow_i_ntt = Poly::zero_moduli(n, moduli);
-        r_pow_i_ntt.to_ntt(ctx);
+            for (j, a_j_ntt) in a_ct_ntt.iter().enumerate() {
+                // Index using g^{n-i} (canonical: inverse direction)
+                let exp_index = (n - i) % n;
+                let index = (j * gen_pows[exp_index]) % (2 * n);
 
-        for (j, a_j_ntt) in a_ct_ntt.iter().enumerate() {
-            // Index using g^{n-i} (canonical: inverse direction)
-            let exp_index = (n - i) % n;
-            let index = (j * gen_pows[exp_index]) % (2 * n);
+                // Select NTT-form monomial (precomputed)
+                let monomial_ntt = if index < n {
+                    &pack_params.monomials_ntt[index % n]
+                } else {
+                    &pack_params.neg_monomials_ntt[index % n]
+                };
 
-            // Select NTT-form monomial (precomputed)
-            let monomial_ntt = if index < n {
-                &pack_params.monomials_ntt[index % n]
-            } else {
-                &pack_params.neg_monomials_ntt[index % n]
-            };
+                // Fused multiply-accumulate in NTT domain
+                r_pow_i_ntt.mul_acc_ntt_domain(monomial_ntt, a_j_ntt, ctx);
+            }
 
-            // Fused multiply-accumulate in NTT domain
-            r_pow_i_ntt.mul_acc_ntt_domain(monomial_ntt, a_j_ntt, ctx);
-        }
+            // Scale by 1/γ in NTT domain (pointwise multiply by constant polynomial)
+            let r_pow_i_scaled = r_pow_i_ntt.mul_ntt_domain(&pack_params.mod_inv_poly_ntt, ctx);
 
-        // Scale by 1/γ in NTT domain (pointwise multiply by constant polynomial)
-        let r_pow_i_scaled = r_pow_i_ntt.mul_ntt_domain(&pack_params.mod_inv_poly_ntt, ctx);
-
-        // Apply automorphism τ_{g^i} in NTT domain using precomputed tables
-        let g_pow_i = gen_pows[i];
-        let table = pack_params.get_automorph_table(g_pow_i);
-        let r_pow_i_rotated = apply_automorphism_ntt(&r_pow_i_scaled, table);
-
-        r_all.push(r_pow_i_rotated);
-    }
+            // Apply automorphism τ_{g^i} in NTT domain using precomputed tables
+            let g_pow_i = gen_pows[i];
+            let table = pack_params.get_automorph_table(g_pow_i);
+            apply_automorphism_ntt(&r_pow_i_scaled, table)
+        })
+        .collect();
+    let mut r_all = r_all;
 
     // Step 2: Backward recursion (stay in NTT domain as much as possible)
+    //
+    // The k-loop below NTT-converts each gadget digit for its
+    // `mul_acc_ntt_domain` call. Capturing the NTT form in the loop
+    // and pushing it to `bold_t_ntt` directly eliminates a redundant
+    // post-loop NTT pass (3 × (γ-1) NTT conversions).
     let mut bold_t: Vec<Vec<Poly>> = Vec::with_capacity(num_to_pack - 1);
+    let mut bold_t_ntt_rev: Vec<Vec<Poly>> = Vec::with_capacity(num_to_pack - 1);
 
     for i in (0..(num_to_pack - 1)).rev() {
         // Convert R[i+1] to coefficient domain for gadget decomposition
@@ -993,36 +1049,37 @@ pub fn packing_offline(
         let gadget_inv = gadget_decompose(&r_i_plus_1_coeff, &pack_params.gadget);
 
         // R[i] += Σ_k w_all_ntt[i][k] · T[i][k]
-        // Both r_all[i] and w_all_ntt[i][k] are in NTT domain
+        // Both r_all[i] and w_all_ntt[i][k] are in NTT domain.
+        //
+        // Rayon-parallelizing this k-loop was attempted but measured
+        // break-even at ℓ=3 gadget digits (thread dispatch cost absorbs
+        // the parallelism win at this granularity). Serial retained.
+        //
+        // Fused `mul_acc3_ntt_domain` with delayed modular reduction
+        // was also attempted but measured flat within 3-seed noise.
+        // LLVM's vectorizer may optimize three simple sequential loops
+        // better than one complex fused loop. The `mul_acc3_ntt_domain`
+        // method + KATs are retained as additive infrastructure; the
+        // call-site integration is reverted to preserve the simpler
+        // serial chain.
+        let mut gadget_inv_ntt: Vec<Poly> = Vec::with_capacity(gadget_inv.len());
         for (k, t_k) in gadget_inv.iter().enumerate() {
+            let mut t_k_ntt = t_k.clone();
+            t_k_ntt.to_ntt(ctx);
             if k < packing_key.w_all_ntt[i].len() {
-                // Convert T[i][k] to NTT
-                let mut t_k_ntt = t_k.clone();
-                t_k_ntt.to_ntt(ctx);
-                // Fused multiply-accumulate
                 r_all[i].mul_acc_ntt_domain(&t_k_ntt, &packing_key.w_all_ntt[i][k], ctx);
             }
+            gadget_inv_ntt.push(t_k_ntt);
         }
 
         bold_t.push(gadget_inv);
+        bold_t_ntt_rev.push(gadget_inv_ntt);
     }
 
     // Reverse bold_t to get [T[0], T[1], ..., T[γ-2]]
     bold_t.reverse();
-
-    // Pre-convert bold_t to NTT form for optimized online phase
-    let bold_t_ntt: Vec<Vec<Poly>> = bold_t
-        .iter()
-        .map(|row| {
-            row.iter()
-                .map(|p| {
-                    let mut pn = p.clone();
-                    pn.to_ntt(ctx);
-                    pn
-                })
-                .collect()
-        })
-        .collect();
+    let mut bold_t_ntt = bold_t_ntt_rev;
+    bold_t_ntt.reverse();
 
     // Convert a_hat from NTT to coefficient domain
     let mut a_hat = r_all[0].clone();
@@ -1301,6 +1358,60 @@ pub fn packing_online_fully_ntt(
     let final_b = b_poly + &sum_b_ntt;
 
     RlweCiphertext::from_parts(precomp.a_hat.clone(), final_b)
+}
+
+impl ClientPackingKeys {
+    /// Populate `y_all` + `y_all_ntt` from `y_body` if either is empty.
+    ///
+    /// Server-side helper for the wire-deserialize case: the three
+    /// `y_all*` fields on `ClientPackingKeys` are `#[serde(skip)]`
+    /// (retained across in-process call boundaries but dropped on the
+    /// wire), so a server that receives a serialized
+    /// `ClientPackingKeys` sees `y_body` populated and all `y_all*`
+    /// fields empty. This helper derives them once using the same
+    /// NTT-domain automorphism path `ClientPackingKeys::generate`
+    /// runs on the client side.
+    ///
+    /// No-op when both `y_all` and `y_all_ntt` are already populated
+    /// (in-process case where the session's registered keys are
+    /// pre-computed).
+    ///
+    /// Moves the per-call NTT conversions that `packing_online`
+    /// would otherwise pay on every respond call to a single
+    /// derivation amortized across every subsequent query in
+    /// the session.
+    pub fn ensure_server_derivatives(&mut self, pack_params: &PackParams, ctx: &NttContext) {
+        if !self.y_all.is_empty() && !self.y_all_ntt.is_empty() {
+            return;
+        }
+        if self.y_body.is_empty() {
+            return;
+        }
+        let y_all_coeff = if self.y_all.is_empty() {
+            generate_rotations(pack_params, &self.y_body)
+        } else {
+            self.y_all.clone()
+        };
+        let y_all_ntt: Vec<Vec<Poly>> = y_all_coeff
+            .iter()
+            .map(|inner| {
+                inner
+                    .iter()
+                    .map(|poly| {
+                        let mut pn = poly.clone();
+                        pn.to_ntt(ctx);
+                        pn
+                    })
+                    .collect()
+            })
+            .collect();
+        if self.y_all.is_empty() {
+            self.y_all = y_all_coeff;
+        }
+        if self.y_all_ntt.is_empty() {
+            self.y_all_ntt = y_all_ntt;
+        }
+    }
 }
 
 /// Generate rotations of key body for online phase

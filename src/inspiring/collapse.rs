@@ -224,7 +224,13 @@ fn shift_intermediate(ct: &IntermediateCiphertext, k: usize, q: u64) -> Intermed
     IntermediateCiphertext::new(a_polys, b_poly)
 }
 
-/// Multiply polynomial by X^k in negacyclic ring
+/// Multiply polynomial by X^k in negacyclic ring.
+///
+/// `#[inline]` for the compound-codegen pattern; called inside
+/// `collapse` paths used by legacy InsPIRe^(2) tree packing.
+/// Per-coefficient `poly.coeff(i)` loop benefits from single-prime
+/// specialisation.
+#[inline]
 fn mul_by_monomial(poly: &Poly, k: usize, q: u64) -> Poly {
     let d = poly.dimension();
     let k = k % (2 * d);

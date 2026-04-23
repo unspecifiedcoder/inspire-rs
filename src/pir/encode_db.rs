@@ -108,20 +108,33 @@ pub fn encode_database(
     entry_size: usize,
     params: &InspireParams,
     shard_config: &ShardConfig,
-) -> Vec<ShardData> {
+) -> Result<Vec<ShardData>, super::error::PirError> {
     if database.is_empty() || entry_size == 0 {
-        return vec![];
+        return Ok(vec![]);
     }
 
     let total_entries = database.len() / entry_size;
     let entries_per_shard = shard_config.entries_per_shard() as usize;
 
-    debug_assert!(
-        entries_per_shard <= params.ring_dim,
-        "entries_per_shard ({}) must be <= ring_dim ({})",
-        entries_per_shard,
-        params.ring_dim
-    );
+    // Raven-local patch: promote the upstream `debug_assert!` to a
+    // runtime typed error. The original code relied on the debug_assert,
+    // which release builds drop; a mis-sized `ShardConfig` then flowed
+    // `global_index` unshrunk into `inverse_monomial(k, d)` where
+    // `d - k` wrapped to `u64::MAX - (k - d)` and panicked as an
+    // out-of-bounds index deep in the library.
+    if entries_per_shard > params.ring_dim {
+        return Err(super::error::PirError::new(format!(
+            "entries_per_shard ({entries_per_shard}) must be <= ring_dim ({}); \
+             shard_config.shard_size_bytes ({}) / entry_size_bytes ({}) = {} entries per shard, \
+             but the InspiRING packing only supports one entry per ring coefficient. \
+             Expected shard_size_bytes = ring_dim * entry_size_bytes = {}.",
+            params.ring_dim,
+            shard_config.shard_size_bytes,
+            shard_config.entry_size_bytes,
+            entries_per_shard,
+            (params.ring_dim as u64) * (shard_config.entry_size_bytes as u64),
+        )));
+    }
 
     let mut shards = Vec::new();
     let mut entry_offset = 0;
@@ -160,7 +173,7 @@ pub fn encode_database(
         shard_id += 1;
     }
 
-    shards
+    Ok(shards)
 }
 
 /// Extract a 16-bit column value from an entry

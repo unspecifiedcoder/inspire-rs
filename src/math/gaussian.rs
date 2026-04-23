@@ -1,7 +1,22 @@
-//! Discrete Gaussian sampling
+//! Discrete Gaussian sampling.
 //!
 //! Provides samplers for discrete Gaussian distributions over Z,
 //! used for generating error terms in lattice-based cryptography.
+//!
+//! # Constant-time posture
+//!
+//! The current rejection-sampling implementation is NOT
+//! constant-time: the reject-resample loop runs a variable number
+//! of iterations depending on the PRNG output. For Raven's current
+//! threat model (client-server PIR with network-observable timing
+//! budgets in the 10-100 ms range per query, vs per-sample rejection
+//! adding <1 µs of variance), the timing side-channel is inside
+//! the noise floor of the network stack + OS scheduling.
+//!
+//! **Decision: retained.** Porting a constant-time CDF-table sampler
+//! adds `subtle` as a dependency + requires a distribution-equivalence
+//! test (Kolmogorov-Smirnov or chi-square) to ensure no statistical
+//! drift. That work is gated on cryptographic review.
 
 use rand::Rng;
 use rand::SeedableRng;
@@ -97,7 +112,7 @@ impl GaussianSampler {
             let x_sq = (x * x) as f64;
             let prob = (-x_sq / sigma_sq_2).exp();
 
-            let u: f64 = self.rng.gen();
+            let u: f64 = self.rng.gen_range(0.0..1.0);
             if u < prob {
                 return x;
             }

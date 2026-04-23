@@ -17,9 +17,9 @@ use serde::{Deserialize, Serialize};
 /// # Example
 ///
 /// ```
-/// use inspire::rlwe::RlweSecretKey;
-/// use inspire::math::Poly;
-/// use inspire::math::mod_q::DEFAULT_Q;
+/// use raven_inspire::rlwe::RlweSecretKey;
+/// use raven_inspire::math::Poly;
+/// use raven_inspire::math::mod_q::DEFAULT_Q;
 ///
 /// let poly = Poly::zero(256, DEFAULT_Q);
 /// let sk = RlweSecretKey::from_poly(poly);
@@ -48,9 +48,9 @@ pub struct RlweSecretKey {
 /// # Example
 ///
 /// ```
-/// use inspire::rlwe::RlweCiphertext;
-/// use inspire::math::Poly;
-/// use inspire::math::mod_q::DEFAULT_Q;
+/// use raven_inspire::rlwe::RlweCiphertext;
+/// use raven_inspire::math::Poly;
+/// use raven_inspire::math::mod_q::DEFAULT_Q;
 ///
 /// let a = Poly::zero(256, DEFAULT_Q);
 /// let b = Poly::zero(256, DEFAULT_Q);

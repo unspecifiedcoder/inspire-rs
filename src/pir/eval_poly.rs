@@ -206,7 +206,10 @@ fn find_primitive_root(n: usize, q: u64) -> u64 {
             return root;
         }
     }
-    panic!("No primitive root found in first 1000 candidates");
+    // Legacy module (not used by shipping PIR flow; all functions
+    // `#[allow(dead_code)]`). Panic retained until this module is either
+    // deleted or converted to a Result-returning API.
+    panic!("No primitive root found in first 1000 candidates (legacy eval_poly)");
 }
 
 fn is_primitive_root(g: u64, n: usize, q: u64) -> bool {

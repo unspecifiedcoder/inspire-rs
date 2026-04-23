@@ -18,13 +18,23 @@ use super::types::AggregatedCiphertext;
 
 use serde::{Deserialize, Serialize};
 
-/// Main packing algorithm: pack d LWE ciphertexts into one RLWE ciphertext
+/// Main packing algorithm: pack d LWE ciphertexts into one RLWE ciphertext.
 ///
 /// Input: [A, b] ∈ Z_q^(d×(d+1)) (d LWE ciphertexts)
 /// Output: (a_fin, b_fin) ∈ R_q × R_q
 ///
-/// The packed RLWE ciphertext encrypts a polynomial where the i-th coefficient
-/// contains the message from the i-th LWE ciphertext.
+/// The packed RLWE ciphertext encrypts a polynomial where the i-th
+/// coefficient contains the message from the i-th LWE ciphertext.
+///
+/// # Theorem reference
+///
+/// Correctness + noise-growth bound derive from **InsPIRe Theorem 2**
+/// ("full packing"; eprint 2025/1352 §4) which establishes
+/// `||e_pack||_∞ ≤ ℓ · d² · σ_χ² / 4 + d · σ_χ²` under the InspiRING
+/// 2-matrix construction, given that both K_g and K_h are generated
+/// from fresh error samples. The paper's Table 1 parameter sets bound
+/// this below `q / (2p)` so decryption is correct with high
+/// probability.
 ///
 /// # Arguments
 /// * `lwe_ciphertexts` - Array of d LWE ciphertexts to pack
@@ -58,10 +68,20 @@ pub fn pack(
     collapse(&aggregated, k_g, k_h, params)
 }
 
-/// Partial packing for γ ≤ d/2 LWE ciphertexts
+/// Partial packing for γ ≤ d/2 LWE ciphertexts.
 ///
 /// When fewer ciphertexts need to be packed, this optimized version
 /// uses only one key-switching matrix (K_g), reducing key material.
+///
+/// # Theorem reference
+///
+/// Correctness + noise-growth bound derive from **InsPIRe Theorem 4**
+/// ("partial packing"; eprint 2025/1352 §4) which establishes
+/// `||e_pack||_∞ ≤ ℓ · γ · d · σ_χ² / 2 + γ · σ_χ²` at γ ≤ d/2 with
+/// the single K_g matrix. Smaller than Theorem 2's Full-packing bound
+/// because the conjugation branch is skipped; trade-off is that the
+/// γ output coefficients land at the EVEN positions 0, 2, 4, ..., 2γ-2
+/// (paper §4 Corollary 1).
 ///
 /// # Arguments
 /// * `lwe_ciphertexts` - Array of γ ≤ d/2 LWE ciphertexts
@@ -274,7 +294,7 @@ mod tests {
         let a: Vec<u64> = (0..params.ring_dim)
             .map(|_| rng.gen_range(0..params.q))
             .collect();
-        let error = (rng.gen::<u8>() % 7) as i64 - 3;
+        let error = (rng.next_u32() % 7) as i64 - 3;
         LweCiphertext::encrypt(sk, message, params.delta(), a, error)
     }
 

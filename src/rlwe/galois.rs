@@ -9,16 +9,25 @@ use crate::math::Poly;
 
 use super::types::RlweCiphertext;
 
-/// Apply Galois automorphism τ_g to a polynomial
+/// Apply Galois automorphism τ_g to a polynomial.
 ///
-/// τ_g(p(X)) = p(X^g) mod (X^d + 1)
+/// τ_g(p(X)) = p(X^g) mod (X^d + 1).
 ///
 /// For X^d + 1, we have X^d = -1, so:
-/// - X^i maps to X^(g·i mod 2d) with sign flip if (g·i / d) is odd
+/// - X^i maps to X^(g·i mod 2d) with sign flip if (g·i / d) is odd.
 ///
 /// # Arguments
 /// * `poly` - Input polynomial
 /// * `g` - Galois element (must be odd and coprime to 2d)
+///
+/// # Performance
+///
+/// `#[inline]` lets LLVM specialise the `poly.coeff(i)` loop under
+/// the single-prime DEFAULT_Q shipping config (compound-codegen
+/// pattern). Called 22+ times per `pack()` and inside
+/// `inspiring::generate_rotations`; specialising avoids re-emitting
+/// the CRT match on every inner-loop iteration.
+#[inline]
 pub fn apply_automorphism(poly: &Poly, g: usize) -> Poly {
     let d = poly.dimension();
     let q = poly.modulus();

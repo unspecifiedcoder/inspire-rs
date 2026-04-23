@@ -9,8 +9,6 @@
 //! - CRS model for server-side preprocessing
 
 pub mod cost;
-#[cfg(feature = "server")]
-pub mod ethereum_db;
 pub mod inspiring;
 pub mod ks;
 pub mod lwe;
@@ -23,16 +21,12 @@ pub mod rlwe;
 pub use pir::{
     encode_column, encode_database, encode_direct, extract, extract_inspiring, extract_two_packing,
     extract_with_variant, inverse_monomial, query, query_seeded, respond, respond_inspiring,
-    respond_one_packing, respond_seeded, respond_seeded_inspiring, respond_seeded_packed,
-    respond_seeded_with_variant, respond_with_variant, setup, ClientQuery, ClientState,
-    EncodedDatabase, InspireCrs, PackingMode, SeededClientQuery, ServerCrs, ServerResponse,
-    ShardData,
-};
-
-#[cfg(feature = "server")]
-pub use pir::{
-    load_shard_binary, respond_mmap, respond_mmap_inspiring, respond_mmap_one_packing,
-    save_shards_binary, MmapDatabase,
+    respond_inspiring_cached, respond_inspiring_cached_with_session, respond_one_packing,
+    respond_seeded, respond_seeded_inspiring, respond_seeded_inspiring_cached,
+    respond_seeded_inspiring_cached_with_session, respond_seeded_packed,
+    respond_seeded_with_variant, respond_with_variant, setup, ClientQuery, ClientSession,
+    ClientState, EncodedDatabase, InspireCrs, PackingMode, SeededClientQuery, ServerCrs,
+    ServerInspiringCache, ServerResponse, ServerSessionHandle, ServerSessionStore, ShardData,
 };
 
 pub use params::{InspireParams, InspireVariant, SecurityLevel};

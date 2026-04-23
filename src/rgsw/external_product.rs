@@ -2,6 +2,7 @@
 //!
 //! This is the key operation for homomorphic multiplication in the InsPIRe scheme.
 
+use crate::math::mod_q::DEFAULT_Q;
 use crate::math::{NttContext, Poly};
 use crate::rlwe::RlweCiphertext;
 
@@ -14,6 +15,21 @@ use super::types::{GadgetVector, RgswCiphertext};
 ///
 /// The digits are in [0, z) range for simplicity.
 pub fn gadget_decompose(poly: &Poly, gadget: &GadgetVector) -> Vec<Poly> {
+    // Fast path for single-prime DEFAULT_Q + shipping gadget config
+    // (base = 2^20, len = 3). Under multi-CRT moduli,
+    // `poly.coeff(j)` reconstructs a composite value via `crt_compose_2`
+    // and `set_coeff` decomposes digits back to CRT limbs — neither is
+    // a direct per-limb operation, so the fast path's direct slice
+    // access would be incorrect. Gate on single-prime DEFAULT_Q to stay
+    // byte-identical with the generic path under 2-CRT.
+    if gadget.base == (1u64 << 20)
+        && gadget.len == 3
+        && poly.moduli().len() == 1
+        && poly.moduli()[0] == DEFAULT_Q
+    {
+        return gadget_decompose_default_q(poly);
+    }
+
     let d = poly.dimension();
     let base = gadget.base;
     let ell = gadget.len;
@@ -34,6 +50,60 @@ pub fn gadget_decompose(poly: &Poly, gadget: &GadgetVector) -> Vec<Poly> {
     }
 
     result
+}
+
+/// Fast-path gadget decomposition for DEFAULT_Q's shipping gadget
+/// `(base = 2^20, len = 3)`.
+///
+/// Operates directly on `Poly::coeffs()` without per-coefficient method
+/// calls. Compile-time base + unrolled ell=3 loop. Byte-identical output
+/// to the generic path at the matching gadget parameters; verified by
+/// `gadget_decompose_reconstruct_roundtrip` + `gadget_decompose_small_digits`
+/// tests in the module.
+#[inline]
+fn gadget_decompose_default_q(poly: &Poly) -> Vec<Poly> {
+    const BASE_MASK: u64 = (1u64 << 20) - 1;
+
+    // Caller already gates on `moduli.len() == 1 && moduli[0] == DEFAULT_Q`,
+    // so the outer `for m in 0..crt_count` loop is always a single
+    // iteration. Specialise the single-CRT shape to eliminate the
+    // outer loop's LLVM bounds checks + let the compiler hoist pointer
+    // setup out of any iteration overhead.
+    let moduli = poly.moduli();
+    debug_assert_eq!(
+        moduli.len(),
+        1,
+        "gadget_decompose_default_q: caller must gate on single-prime moduli"
+    );
+    debug_assert_eq!(
+        moduli[0],
+        DEFAULT_Q,
+        "gadget_decompose_default_q: caller must gate on DEFAULT_Q"
+    );
+
+    let d = poly.dimension();
+    let src = poly.coeffs();
+
+    let mut digit0 = vec![0u64; d];
+    let mut digit1 = vec![0u64; d];
+    let mut digit2 = vec![0u64; d];
+
+    // Single-CRT specialised loop: one pass over d coefficients.
+    for j in 0..d {
+        let val = src[j];
+        digit0[j] = val & BASE_MASK;
+        digit1[j] = (val >> 20) & BASE_MASK;
+        digit2[j] = (val >> 40) & BASE_MASK;
+    }
+
+    // Skip the `reduce()` pass since digits are masked by
+    // BASE_MASK = 2^20 − 1 < DEFAULT_Q. The invariant is enforced by
+    // the mask above; `from_crt_coeffs_reduced` preserves it.
+    vec![
+        Poly::from_crt_coeffs_reduced(digit0, moduli),
+        Poly::from_crt_coeffs_reduced(digit1, moduli),
+        Poly::from_crt_coeffs_reduced(digit2, moduli),
+    ]
 }
 
 /// Reconstruct a polynomial from its gadget decomposition
@@ -72,6 +142,138 @@ pub fn gadget_reconstruct(decomposed: &[Poly], gadget: &GadgetVector) -> Poly {
     }
 
     result
+}
+
+/// Precomputed NTT form of an RGSW ciphertext's rows for reuse
+/// across many `external_product` calls (e.g. the 128-column PIR
+/// server loop). Each entry is `(a_ntt, b_ntt)` corresponding to
+/// `rgsw.rows[i].a / .b` converted to NTT domain once.
+///
+/// Pre-NTT conversion eliminates redundant forward-NTTs of RGSW
+/// components on every external product call. At 128 columns ×
+/// 2ℓ=6 rows × 2 polys = 1536 NTTs saved per query.
+pub type RgswRowsNtt = Vec<(Poly, Poly)>;
+
+/// Pre-convert all RGSW row polynomials to NTT form for reuse.
+///
+/// Callers that will run many `external_product` calls against the
+/// same RGSW (e.g. one query × many DB columns) should invoke this
+/// once before the loop and pass the result into
+/// [`external_product_with_ntt_rgsw`].
+pub fn rgsw_rows_to_ntt(rgsw: &RgswCiphertext, ctx: &NttContext) -> RgswRowsNtt {
+    rgsw.rows
+        .iter()
+        .map(|row| {
+            let mut a_ntt = row.a.clone();
+            if !a_ntt.is_ntt() {
+                a_ntt.to_ntt(ctx);
+            }
+            let mut b_ntt = row.b.clone();
+            if !b_ntt.is_ntt() {
+                b_ntt.to_ntt(ctx);
+            }
+            (a_ntt, b_ntt)
+        })
+        .collect()
+}
+
+/// Fast external product using pre-NTT'd RGSW rows.
+///
+/// Byte-identical to `external_product(rlwe, rgsw, ctx)` at
+/// matching inputs. Key differences:
+/// - Assumes `rgsw_ntt` has been pre-converted via
+///   [`rgsw_rows_to_ntt`] (constant across many calls).
+/// - Converts the gadget-decomposed `rlwe.a` / `rlwe.b` digits to
+///   NTT form ONCE (not twice as in the classical `mul_ntt` pattern).
+/// - Accumulates the pointwise products directly in NTT domain,
+///   deferring the inverse NTT to a single pair at the end.
+///
+/// Op-count reduction per call at ℓ=3:
+/// - Classical `external_product`: 12 `mul_ntt` ops. Each
+///   `Poly::mul_ntt` converts both operands to NTT then converts the
+///   product back (2 forward + 1 inverse = 3 NTTs per op). Total per
+///   call: 12 × 3 = **36 NTTs** (of which 12 are on the RGSW .a/.b).
+/// - This function per call: 6 forward (a_decomp + b_decomp) +
+///   2 forward (zero-poly init to NTT domain) + 2 inverse at the end
+///   = **10 NTTs**.
+/// - Amortization: the RGSW's 12 forward NTTs (from `rgsw_rows_to_ntt`)
+///   are paid ONCE before the par_iter loop over the shard's columns.
+///   For a 128-column shard the effective per-column forward count drops
+///   to 12/128 ≈ 0.09 shared + 10 per-call = ~10.1 vs classical 36.
+///   Net: **~3.6x fewer NTTs per column amortized**.
+///
+/// # Arguments
+/// * `rlwe` - The RLWE operand (coefficient-form, as produced by
+///   `trivial_encrypt` on DB polynomials).
+/// * `rgsw_ntt` - Pre-NTT'd RGSW row polynomials (length `2ℓ`).
+/// * `gadget` - Gadget parameters matching the RGSW.
+/// * `ctx` - NTT context; must match the moduli used by both operands.
+pub fn external_product_with_ntt_rgsw(
+    rlwe: &RlweCiphertext,
+    rgsw_ntt: &[(Poly, Poly)],
+    gadget: &GadgetVector,
+    ctx: &NttContext,
+) -> RlweCiphertext {
+    let d = rlwe.ring_dim();
+    let moduli = rlwe.a.moduli();
+    let ell = gadget.len;
+    assert_eq!(rgsw_ntt.len(), 2 * ell, "RGSW NTT rows must have 2ℓ entries");
+    assert_eq!(rlwe.b.moduli(), moduli, "RLWE components must share moduli");
+    assert_eq!(
+        ctx.moduli(),
+        moduli,
+        "NTT context moduli must match ciphertext moduli"
+    );
+
+    // Decompose a and b into ℓ digit-polys in coefficient form
+    // (standard gadget_decompose; fast path kicks in under
+    // single-prime DEFAULT_Q).
+    let a_decomp = gadget_decompose(&rlwe.a, gadget);
+    let b_decomp = gadget_decompose(&rlwe.b, gadget);
+
+    // Forward-NTT each digit poly exactly once (each is used twice —
+    // against the .a and .b component of its RGSW row — so caching
+    // the NTT form saves half the forward conversions).
+    let a_decomp_ntt: Vec<Poly> = a_decomp
+        .into_iter()
+        .map(|mut p| {
+            p.to_ntt(ctx);
+            p
+        })
+        .collect();
+    let b_decomp_ntt: Vec<Poly> = b_decomp
+        .into_iter()
+        .map(|mut p| {
+            p.to_ntt(ctx);
+            p
+        })
+        .collect();
+
+    // Accumulate in NTT domain. Start with zero polys in NTT form.
+    let mut result_a = Poly::zero_moduli(d, moduli);
+    let mut result_b = Poly::zero_moduli(d, moduli);
+    result_a.to_ntt(ctx);
+    result_b.to_ntt(ctx);
+
+    for i in 0..ell {
+        let (row_a_a_ntt, row_a_b_ntt) = &rgsw_ntt[i];
+        // result_a += a_decomp_ntt[i] * row_a_a_ntt
+        // result_b += a_decomp_ntt[i] * row_a_b_ntt
+        result_a.mul_acc_ntt_domain(&a_decomp_ntt[i], row_a_a_ntt, ctx);
+        result_b.mul_acc_ntt_domain(&a_decomp_ntt[i], row_a_b_ntt, ctx);
+
+        let (row_b_a_ntt, row_b_b_ntt) = &rgsw_ntt[ell + i];
+        // result_a += b_decomp_ntt[i] * row_b_a_ntt
+        // result_b += b_decomp_ntt[i] * row_b_b_ntt
+        result_a.mul_acc_ntt_domain(&b_decomp_ntt[i], row_b_a_ntt, ctx);
+        result_b.mul_acc_ntt_domain(&b_decomp_ntt[i], row_b_b_ntt, ctx);
+    }
+
+    // Single inverse NTT per component at the end.
+    result_a.from_ntt(ctx);
+    result_b.from_ntt(ctx);
+
+    RlweCiphertext::from_parts(result_a, result_b)
 }
 
 /// Compute the external product: RLWE(m₀) ⊡ RGSW(m₁) → RLWE(m₀·m₁)

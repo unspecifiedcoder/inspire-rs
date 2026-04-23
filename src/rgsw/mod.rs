@@ -19,8 +19,8 @@
 //! # Example
 //!
 //! ```ignore
-//! use inspire::rgsw::{RgswCiphertext, GadgetVector, external_product};
-//! use inspire::rlwe::RlweCiphertext;
+//! use raven_inspire::rgsw::{RgswCiphertext, GadgetVector, external_product};
+//! use raven_inspire::rlwe::RlweCiphertext;
 //!
 //! let gadget = GadgetVector::new(1 << 20, 3, q);
 //! let rgsw_ct = RgswCiphertext::encrypt(...);
@@ -30,5 +30,8 @@
 mod external_product;
 mod types;
 
-pub use external_product::{external_product, gadget_decompose, gadget_reconstruct};
+pub use external_product::{
+    external_product, external_product_with_ntt_rgsw, gadget_decompose, gadget_reconstruct,
+    rgsw_rows_to_ntt, RgswRowsNtt,
+};
 pub use types::{GadgetVector, RgswCiphertext, SeededRgswCiphertext};

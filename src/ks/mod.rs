@@ -26,8 +26,8 @@
 //! # Example
 //!
 //! ```ignore
-//! use inspire::ks::{KeySwitchingMatrix, generate_ks_matrix, key_switch};
-//! use inspire::rgsw::GadgetVector;
+//! use raven_inspire::ks::{KeySwitchingMatrix, generate_ks_matrix, key_switch};
+//! use raven_inspire::rgsw::GadgetVector;
 //!
 //! let gadget = GadgetVector::new(1 << 20, 3, q);
 //! let ks_matrix = generate_ks_matrix(&from_key, &to_key, &gadget, &mut sampler, &ctx);

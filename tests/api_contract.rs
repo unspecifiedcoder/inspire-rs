@@ -4,8 +4,8 @@
 //! trait bounds, and security invariants (e.g., secret key fields are
 //! never leaked through serde).
 
-use inspire::params::{InspireParams, InspireVariant, SecurityLevel, ShardConfig};
-use inspire::pir::{
+use raven_inspire::params::{InspireParams, InspireVariant, SecurityLevel, ShardConfig};
+use raven_inspire::pir::{
     ClientQuery, ClientState, EncodedDatabase, InspireCrs, PackingMode, SeededClientQuery,
     ServerCrs, ServerResponse, ShardData,
 };
@@ -182,8 +182,8 @@ fn client_state_secret_keys_not_serialized() {
     // ClientState.secret_key and .rlwe_secret_key are #[serde(skip, default)].
     // After a JSON round-trip the secret key fields must be empty/default.
 
-    use inspire::math::GaussianSampler;
-    use inspire::pir::setup;
+    use raven_inspire::math::GaussianSampler;
+    use raven_inspire::pir::setup;
 
     let params = test_params();
     let mut sampler = GaussianSampler::new(params.sigma);
@@ -197,7 +197,7 @@ fn client_state_secret_keys_not_serialized() {
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let (_state, _query) =
-        inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
+        raven_inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
 
     // Serialize → deserialize via JSON
     let json = serde_json::to_string(&_state).unwrap();
@@ -223,8 +223,8 @@ fn client_state_secret_keys_not_serialized() {
 #[test]
 fn client_state_secret_keys_absent_from_json() {
     // Verify the JSON output literally does not contain the secret key fields.
-    use inspire::math::GaussianSampler;
-    use inspire::pir::setup;
+    use raven_inspire::math::GaussianSampler;
+    use raven_inspire::pir::setup;
 
     let params = test_params();
     let mut sampler = GaussianSampler::new(params.sigma);
@@ -238,7 +238,7 @@ fn client_state_secret_keys_absent_from_json() {
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let (state, _query) =
-        inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
+        raven_inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
 
     let json = serde_json::to_string(&state).unwrap();
 
@@ -257,8 +257,8 @@ fn server_crs_skipped_fields_absent_from_json() {
     // ServerCrs.inspiring_pack_params and .inspiring_packing_key are #[serde(skip)].
     // They must not appear in serialized output.
 
-    use inspire::math::GaussianSampler;
-    use inspire::pir::setup;
+    use raven_inspire::math::GaussianSampler;
+    use raven_inspire::pir::setup;
 
     let params = test_params();
     let mut sampler = GaussianSampler::new(params.sigma);
@@ -296,8 +296,8 @@ fn server_crs_skipped_fields_absent_from_json() {
 #[test]
 fn server_crs_skipped_fields_none_after_roundtrip() {
     // After a JSON round-trip, the skipped Option fields should be None.
-    use inspire::math::GaussianSampler;
-    use inspire::pir::setup;
+    use raven_inspire::math::GaussianSampler;
+    use raven_inspire::pir::setup;
 
     let params = test_params();
     let mut sampler = GaussianSampler::new(params.sigma);
@@ -335,8 +335,8 @@ fn server_crs_skipped_fields_none_after_roundtrip() {
 
 #[test]
 fn server_response_bincode_roundtrip() {
-    use inspire::math::GaussianSampler;
-    use inspire::pir::{respond, setup};
+    use raven_inspire::math::GaussianSampler;
+    use raven_inspire::pir::{respond, setup};
 
     let params = test_params();
     let mut sampler = GaussianSampler::new(params.sigma);
@@ -350,7 +350,7 @@ fn server_response_bincode_roundtrip() {
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let (_state, client_query) =
-        inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
+        raven_inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
 
     let response = respond(&crs, &encoded_db, &client_query).unwrap();
 
@@ -370,8 +370,8 @@ fn server_response_bincode_roundtrip() {
 
 #[test]
 fn server_response_json_roundtrip() {
-    use inspire::math::GaussianSampler;
-    use inspire::pir::{respond, setup};
+    use raven_inspire::math::GaussianSampler;
+    use raven_inspire::pir::{respond, setup};
 
     let params = test_params();
     let mut sampler = GaussianSampler::new(params.sigma);
@@ -385,7 +385,7 @@ fn server_response_json_roundtrip() {
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let (_state, client_query) =
-        inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
+        raven_inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
 
     let response = respond(&crs, &encoded_db, &client_query).unwrap();
 
@@ -455,33 +455,33 @@ fn reexport_extract_inspiring_accessible() {
         &ClientState,
         &ServerResponse,
         usize,
-    ) -> inspire::pir::Result<Vec<u8>> = inspire::extract_inspiring;
-    // Also accessible via inspire::pir::extract_inspiring
+    ) -> raven_inspire::pir::Result<Vec<u8>> = raven_inspire::extract_inspiring;
+    // Also accessible via raven_inspire::pir::extract_inspiring
     let _fn_ptr2: fn(
         &ServerCrs,
         &ClientState,
         &ServerResponse,
         usize,
-    ) -> inspire::pir::Result<Vec<u8>> = inspire::pir::extract_inspiring;
+    ) -> raven_inspire::pir::Result<Vec<u8>> = raven_inspire::pir::extract_inspiring;
 }
 
 #[test]
 fn reexport_all_extract_variants_accessible() {
     // All extract functions should be accessible from the crate root
     type ExtractFn =
-        fn(&ServerCrs, &ClientState, &ServerResponse, usize) -> inspire::pir::Result<Vec<u8>>;
+        fn(&ServerCrs, &ClientState, &ServerResponse, usize) -> raven_inspire::pir::Result<Vec<u8>>;
     type ExtractWithVariantFn = fn(
         &ServerCrs,
         &ClientState,
         &ServerResponse,
         usize,
         InspireVariant,
-    ) -> inspire::pir::Result<Vec<u8>>;
+    ) -> raven_inspire::pir::Result<Vec<u8>>;
 
-    let _: ExtractFn = inspire::extract;
-    let _: ExtractFn = inspire::extract_inspiring;
-    let _: ExtractFn = inspire::extract_two_packing;
-    let _: ExtractWithVariantFn = inspire::extract_with_variant;
+    let _: ExtractFn = raven_inspire::extract;
+    let _: ExtractFn = raven_inspire::extract_inspiring;
+    let _: ExtractFn = raven_inspire::extract_two_packing;
+    let _: ExtractWithVariantFn = raven_inspire::extract_with_variant;
 }
 
 // ===========================================================================
@@ -517,8 +517,8 @@ fn security_level_all_values() {
 fn api_setup_query_respond_extract_compiles() {
     // This test verifies that the primary API flow compiles with the
     // expected types. The actual correctness is tested in e2e_pir.rs.
-    use inspire::math::GaussianSampler;
-    use inspire::pir::{extract, query, respond, setup};
+    use raven_inspire::math::GaussianSampler;
+    use raven_inspire::pir::{extract, query, respond, setup};
 
     let params = test_params();
     let mut sampler = GaussianSampler::new(params.sigma);
@@ -539,8 +539,8 @@ fn api_setup_query_respond_extract_compiles() {
 
 #[test]
 fn api_seeded_query_compiles() {
-    use inspire::math::GaussianSampler;
-    use inspire::pir::{query_seeded, setup};
+    use raven_inspire::math::GaussianSampler;
+    use raven_inspire::pir::{query_seeded, setup};
 
     let params = test_params();
     let mut sampler = GaussianSampler::new(params.sigma);
@@ -567,8 +567,8 @@ fn api_seeded_query_compiles() {
 
 #[test]
 fn client_query_json_roundtrip() {
-    use inspire::math::GaussianSampler;
-    use inspire::pir::setup;
+    use raven_inspire::math::GaussianSampler;
+    use raven_inspire::pir::setup;
 
     let params = test_params();
     let mut sampler = GaussianSampler::new(params.sigma);
@@ -582,7 +582,7 @@ fn client_query_json_roundtrip() {
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let (_state, client_query) =
-        inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
+        raven_inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
 
     let json = serde_json::to_string(&client_query).unwrap();
     let recovered: ClientQuery = serde_json::from_str(&json).unwrap();
@@ -593,8 +593,8 @@ fn client_query_json_roundtrip() {
 
 #[test]
 fn seeded_client_query_json_roundtrip() {
-    use inspire::math::GaussianSampler;
-    use inspire::pir::setup;
+    use raven_inspire::math::GaussianSampler;
+    use raven_inspire::pir::setup;
 
     let params = test_params();
     let mut sampler = GaussianSampler::new(params.sigma);
@@ -608,11 +608,70 @@ fn seeded_client_query_json_roundtrip() {
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let (_state, seeded_query) =
-        inspire::pir::query_seeded(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
+        raven_inspire::pir::query_seeded(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
 
     let json = serde_json::to_string(&seeded_query).unwrap();
     let recovered: SeededClientQuery = serde_json::from_str(&json).unwrap();
 
     assert_eq!(recovered.shard_id, seeded_query.shard_id);
     assert_eq!(recovered.packing_mode, seeded_query.packing_mode);
+}
+
+// ===========================================================================
+// ServerResponse.packing_mode tag: bincode roundtrip must survive all three
+// discriminant states. A prior version combined `skip_serializing_if` with
+// bincode's positional format and produced a deserialize-time unexpected-EOF
+// when the tag was None. Locking all three variants prevents regression.
+// ===========================================================================
+
+#[test]
+fn server_response_bincode_roundtrip_packing_mode_none() {
+    roundtrip_server_response_bincode_with_mode(None);
+}
+
+#[test]
+fn server_response_bincode_roundtrip_packing_mode_tree() {
+    roundtrip_server_response_bincode_with_mode(Some(PackingMode::Tree));
+}
+
+#[test]
+fn server_response_bincode_roundtrip_packing_mode_inspiring() {
+    roundtrip_server_response_bincode_with_mode(Some(PackingMode::Inspiring));
+}
+
+fn roundtrip_server_response_bincode_with_mode(mode: Option<PackingMode>) {
+    use raven_inspire::math::GaussianSampler;
+    use raven_inspire::pir::{respond, setup};
+
+    let params = test_params();
+    let mut sampler = GaussianSampler::new(params.sigma);
+
+    let entry_size = 32;
+    let num_entries = params.ring_dim;
+    let database: Vec<u8> = (0..(num_entries * entry_size))
+        .map(|i| (i % 256) as u8)
+        .collect();
+
+    let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
+    let (_state, client_query) =
+        raven_inspire::pir::query(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
+
+    let mut response = respond(&crs, &encoded_db, &client_query).unwrap();
+    response.packing_mode = mode;
+
+    let bytes = response.to_binary().unwrap();
+    let recovered = ServerResponse::from_binary(&bytes).unwrap();
+
+    assert_eq!(
+        recovered.packing_mode, response.packing_mode,
+        "packing_mode must roundtrip bit-for-bit under bincode"
+    );
+    assert_eq!(
+        recovered.ciphertext.ring_dim(),
+        response.ciphertext.ring_dim()
+    );
+    assert_eq!(
+        recovered.column_ciphertexts.len(),
+        response.column_ciphertexts.len()
+    );
 }

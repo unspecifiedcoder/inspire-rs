@@ -12,8 +12,8 @@
 //! # Example
 //!
 //! ```
-//! use inspire::cost::CostEstimator;
-//! use inspire::params::{InspireParams, InspireVariant};
+//! use raven_inspire::cost::CostEstimator;
+//! use raven_inspire::params::{InspireParams, InspireVariant};
 //!
 //! let params = InspireParams::secure_128_d2048();
 //! let entry_size = 32;

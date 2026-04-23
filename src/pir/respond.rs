@@ -14,15 +14,13 @@
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::inspiring::packing_online;
+use crate::inspiring::{packing_online, packing_online_fully_ntt};
 use crate::math::Poly;
 use crate::params::InspireVariant;
-use crate::rgsw::external_product;
+use crate::rgsw::{external_product, external_product_with_ntt_rgsw, rgsw_rows_to_ntt};
 use crate::rlwe::RlweCiphertext;
 
 use super::error::{pir_err, Result};
-#[cfg(feature = "server")]
-use super::mmap::MmapDatabase;
 use super::query::{ClientQuery, PackingMode, SeededClientQuery};
 use super::setup::{EncodedDatabase, ServerCrs};
 
@@ -34,6 +32,21 @@ pub struct ServerResponse {
     pub ciphertext: RlweCiphertext,
     /// Per-column ciphertexts (for proper multi-column extraction)
     pub column_ciphertexts: Vec<RlweCiphertext>,
+    /// Packing format the responder used, so extractors can dispatch
+    /// correctly between InspiRING (unscaled coefficients) and
+    /// tree-packed (d-scaled) without asking the caller. Pre-fork code
+    /// had callers track this out-of-band, which caused a silent
+    /// wrong-bytes failure under the TwoPacking variant.
+    ///
+    /// `#[serde(default)]` alone (not paired with `skip_serializing_if`):
+    /// bincode is positional, so skipping None on serialize leaves the
+    /// deserializer reading the next field positionally and hitting
+    /// unexpected-EOF. Always serialize the discriminant, even when
+    /// None. Self-describing formats (JSON) keep the semantics via
+    /// serde(default); legacy bincode payloads without the field still
+    /// fail fast rather than silently decoding a wrong packing mode.
+    #[serde(default)]
+    pub packing_mode: Option<PackingMode>,
 }
 
 impl ServerResponse {
@@ -74,6 +87,7 @@ pub fn respond(
     query: &ClientQuery,
 ) -> Result<ServerResponse> {
     let delta = crs.params.delta();
+    let ctx = crs.params.ntt_context();
 
     let shard = encoded_db
         .shards
@@ -86,16 +100,27 @@ pub fn respond(
         return Ok(ServerResponse {
             ciphertext: zero.clone(),
             column_ciphertexts: vec![zero],
+            packing_mode: None,
         });
     }
 
+    // Pre-NTT the RGSW rows once before the par_iter and accumulate
+    // in NTT domain via `external_product_with_ntt_rgsw`. RGSW is
+    // constant across the shard's columns so the forward NTTs amortize.
+    // Byte-identical to the classical path (tests/external_product_ntt_kat.rs).
+    let rgsw_ntt_rows = rgsw_rows_to_ntt(&query.rgsw_ciphertext, &ctx);
+    let rgsw_gadget = &query.rgsw_ciphertext.gadget;
     let column_ciphertexts: Vec<RlweCiphertext> = shard
         .polynomials
         .par_iter()
         .map(|db_poly| {
-            let local_ctx = crs.params.ntt_context();
+            // NttContext is hoisted out of the par_iter so each
+            // worker shares the read-only Montgomery + twiddle tables
+            // instead of allocating a fresh one per shard polynomial.
+            // (Safe: NttContext fields are all read-only Vecs;
+            // clone-or-share under rayon is OK.)
             let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
-            external_product(&rlwe_db, &query.rgsw_ciphertext, &local_ctx)
+            external_product_with_ntt_rgsw(&rlwe_db, &rgsw_ntt_rows, rgsw_gadget, &ctx)
         })
         .collect();
 
@@ -111,6 +136,7 @@ pub fn respond(
     Ok(ServerResponse {
         ciphertext: combined,
         column_ciphertexts,
+        packing_mode: None,
     })
 }
 
@@ -134,7 +160,7 @@ pub fn respond_with_variant(
 ) -> Result<ServerResponse> {
     match variant {
         InspireVariant::NoPacking => respond(crs, encoded_db, query),
-        InspireVariant::OnePacking | InspireVariant::TwoPacking => match query.packing_mode {
+        InspireVariant::OnePacking => match query.packing_mode {
             PackingMode::Inspiring => {
                 if query.inspiring_packing_keys.is_none() {
                     return Err(pir_err!(
@@ -145,6 +171,21 @@ pub fn respond_with_variant(
             }
             PackingMode::Tree => respond_one_packing(crs, encoded_db, query),
         },
+        // Raven-local patch: the pre-fork code silently routed
+        // TwoPacking through the OnePacking responder, then
+        // `extract_with_variant(TwoPacking)` decoded a mismatched
+        // format, producing semantically wrong plaintext with no
+        // error surfacing at runtime. TwoPacking's canonical path is
+        // the seeded pipeline; callers must go through
+        // `respond_seeded_with_variant` (or the direct
+        // `respond_seeded_inspiring` / `respond_seeded_packed`
+        // entrypoints).
+        InspireVariant::TwoPacking => Err(pir_err!(
+            "respond_with_variant(TwoPacking) is not supported on an unseeded \
+             ClientQuery: TwoPacking requires the seeded pipeline \
+             (query_seeded + respond_seeded_with_variant or respond_seeded_inspiring / \
+             respond_seeded_packed). See docs/GOOGLE_ALIGNMENT.md."
+        )),
     }
 }
 
@@ -216,6 +257,7 @@ pub fn respond_one_packing(
     let _d = crs.ring_dim();
     let _q = crs.modulus();
     let delta = crs.params.delta();
+    let ctx = crs.params.ntt_context();
 
     let shard = encoded_db
         .shards
@@ -228,19 +270,29 @@ pub fn respond_one_packing(
         return Ok(ServerResponse {
             ciphertext: zero.clone(),
             column_ciphertexts: vec![zero],
+            packing_mode: None,
         });
     }
 
     // Step 1: Compute external product for each column (parallel)
     // After external product, each RLWE has the target value at coefficient 0
     // All other coefficients contain rotated database values
+    //
+    // Pre-NTT RGSW once + NTT-domain accumulation. RGSW is constant
+    // across the shard columns; amortizes the forward NTTs.
+    let rgsw_ntt_rows = rgsw_rows_to_ntt(&query.rgsw_ciphertext, &ctx);
+    let rgsw_gadget = &query.rgsw_ciphertext.gadget;
     let column_ciphertexts: Vec<RlweCiphertext> = shard
         .polynomials
         .par_iter()
         .map(|db_poly| {
-            let local_ctx = crs.params.ntt_context();
+            // NttContext is hoisted out of the par_iter so each
+            // worker shares the read-only Montgomery + twiddle tables
+            // instead of allocating a fresh one per shard polynomial.
+            // (Safe: NttContext fields are all read-only Vecs;
+            // clone-or-share under rayon is OK.)
             let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
-            external_product(&rlwe_db, &query.rgsw_ciphertext, &local_ctx)
+            external_product_with_ntt_rgsw(&rlwe_db, &rgsw_ntt_rows, rgsw_gadget, &ctx)
         })
         .collect();
 
@@ -260,6 +312,7 @@ pub fn respond_one_packing(
     Ok(ServerResponse {
         ciphertext: packed,
         column_ciphertexts: vec![], // Empty - all data is in the packed ciphertext
+        packing_mode: None,
     })
 }
 
@@ -305,17 +358,21 @@ pub fn respond_inspiring(
         return Ok(ServerResponse {
             ciphertext: zero.clone(),
             column_ciphertexts: vec![zero],
+            packing_mode: None,
         });
     }
 
-    // Step 1: Compute external product for each column (parallel)
+    // Step 1: Compute external product for each column (parallel).
+    // Pre-NTT RGSW once + accumulate in NTT domain.
+    let rgsw_ntt_rows = rgsw_rows_to_ntt(&query.rgsw_ciphertext, &ctx);
+    let rgsw_gadget = &query.rgsw_ciphertext.gadget;
     let column_ciphertexts: Vec<RlweCiphertext> = shard
         .polynomials
         .par_iter()
         .map(|db_poly| {
-            let local_ctx = crs.params.ntt_context();
+
             let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
-            external_product(&rlwe_db, &query.rgsw_ciphertext, &local_ctx)
+            external_product_with_ntt_rgsw(&rlwe_db, &rgsw_ntt_rows, rgsw_gadget, &ctx)
         })
         .collect();
 
@@ -331,6 +388,7 @@ pub fn respond_inspiring(
         return Ok(ServerResponse {
             ciphertext: zero,
             column_ciphertexts: vec![],
+            packing_mode: None,
         });
     }
 
@@ -378,10 +436,450 @@ pub fn respond_inspiring(
     // Step 7: Online packing using precomputed a_hat and bold_t with client's y_all
     let packed = packing_online(&precomp, y_all, &b_poly, &ctx);
 
+    // Tag the response with its packing mode so `extract_with_variant`
+    // can route correctly between InspiRING (unscaled coefficients)
+    // and tree-packed (d-scaled) formats without asking the caller.
     Ok(ServerResponse {
         ciphertext: packed,
         column_ciphertexts: vec![],
+        packing_mode: Some(PackingMode::Inspiring),
     })
+}
+
+/// Server-side cache of InspiRING pack params + offline keys.
+///
+/// `PackParams::new` (which runs an O(n³) automorph-tables search)
+/// and `OfflinePackingKeys::generate` are both query-independent;
+/// they depend only on `crs.params`, `num_columns`, and
+/// `crs.inspiring_w_seed`. Cache them once per CRS and feed into
+/// `respond_inspiring_cached`.
+///
+/// `num_columns` is derived from the first shard's polynomial
+/// count and is stable across all queries against one CRS (shard
+/// shape is set at setup time).
+#[derive(Clone, Debug)]
+pub struct ServerInspiringCache {
+    pack_params: crate::inspiring::PackParams,
+    offline_keys: crate::inspiring::OfflinePackingKeys,
+}
+
+impl ServerInspiringCache {
+    /// Build the cache. Pay the one-time O(d³) cost here.
+    pub fn new(crs: &ServerCrs, encoded_db: &EncodedDatabase) -> Result<Self> {
+        let num_columns = encoded_db
+            .shards
+            .first()
+            .map(|s| s.polynomials.len())
+            .unwrap_or(0);
+        if num_columns == 0 {
+            return Err(pir_err!(
+                "ServerInspiringCache::new: encoded_db has no shard polynomials"
+            ));
+        }
+        let pack_params = crate::inspiring::PackParams::new(&crs.params, num_columns);
+        let offline_keys =
+            crate::inspiring::OfflinePackingKeys::generate(&pack_params, crs.inspiring_w_seed);
+        Ok(Self {
+            pack_params,
+            offline_keys,
+        })
+    }
+
+    /// Borrow the cached pack params for callers that want them
+    /// separately (e.g. `generate_rotations`).
+    pub fn pack_params(&self) -> &crate::inspiring::PackParams {
+        &self.pack_params
+    }
+
+    /// Borrow the cached offline keys.
+    pub fn offline_keys(&self) -> &crate::inspiring::OfflinePackingKeys {
+        &self.offline_keys
+    }
+}
+
+/// Variant of [`respond_inspiring`] that takes a pre-built
+/// [`ServerInspiringCache`] so per-query work skips
+/// `PackParams::new` + `OfflinePackingKeys::generate` (both O(d³)
+/// or O(d²) respectively in the brute-force pre-fork path).
+///
+/// The per-query `packing_offline` call still runs because its
+/// `a_ct_tilde` input is query-derived.
+pub fn respond_inspiring_cached(
+    crs: &ServerCrs,
+    encoded_db: &EncodedDatabase,
+    query: &ClientQuery,
+    cache: &ServerInspiringCache,
+) -> Result<ServerResponse> {
+    use crate::inspiring::{generate_rotations, packing_offline};
+
+    let d = crs.ring_dim();
+    let delta = crs.params.delta();
+    let ctx = crs.params.ntt_context();
+
+    let client_packing_keys = query
+        .inspiring_packing_keys
+        .as_ref()
+        .ok_or_else(|| pir_err!("InspiRING client packing keys missing from query"))?;
+
+    let shard = encoded_db
+        .shards
+        .iter()
+        .find(|s| s.id == query.shard_id)
+        .ok_or_else(|| pir_err!("Shard {} not found", query.shard_id))?;
+
+    if shard.polynomials.is_empty() {
+        let zero = RlweCiphertext::zero(&crs.params);
+        return Ok(ServerResponse {
+            ciphertext: zero.clone(),
+            column_ciphertexts: vec![zero],
+            packing_mode: None,
+        });
+    }
+
+    // Pre-NTT RGSW once + accumulate in NTT domain.
+    let rgsw_ntt_rows = rgsw_rows_to_ntt(&query.rgsw_ciphertext, &ctx);
+    let rgsw_gadget = &query.rgsw_ciphertext.gadget;
+    let column_ciphertexts: Vec<RlweCiphertext> = shard
+        .polynomials
+        .par_iter()
+        .map(|db_poly| {
+
+            let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
+            external_product_with_ntt_rgsw(&rlwe_db, &rgsw_ntt_rows, rgsw_gadget, &ctx)
+        })
+        .collect();
+
+    let lwe_cts: Vec<_> = column_ciphertexts
+        .iter()
+        .map(|rlwe| rlwe.sample_extract_coeff0())
+        .collect();
+
+    let num_columns = lwe_cts.len();
+    if num_columns == 0 {
+        let zero = RlweCiphertext::zero(&crs.params);
+        return Ok(ServerResponse {
+            ciphertext: zero,
+            column_ciphertexts: vec![],
+            packing_mode: None,
+        });
+    }
+
+    let a_ct_tilde: Vec<Poly> = column_ciphertexts
+        .iter()
+        .map(|rlwe| rlwe.a.clone())
+        .collect();
+
+    let mut b_coeffs = vec![0u64; d];
+    for (i, lwe) in lwe_cts.iter().enumerate() {
+        if i < d {
+            b_coeffs[i] = lwe.b;
+        }
+    }
+    let b_poly = Poly::from_coeffs_moduli(b_coeffs, crs.params.moduli());
+
+    // Cached: `pack_params` and `offline_keys` come from the cache
+    // instead of being rebuilt here. `packing_offline` still runs
+    // per-query because it consumes `a_ct_tilde`.
+    let precomp = packing_offline(
+        &cache.pack_params,
+        &cache.offline_keys,
+        &a_ct_tilde,
+        &ctx,
+    );
+
+    let derived_y_all = if client_packing_keys.y_all.is_empty() {
+        if client_packing_keys.y_body.is_empty() {
+            return Err(pir_err!(
+                "InspiRING packing keys invalid: y_all and y_body are both empty"
+            ));
+        }
+        Some(generate_rotations(
+            &cache.pack_params,
+            &client_packing_keys.y_body,
+        ))
+    } else {
+        None
+    };
+    let y_all: &[Vec<Poly>] = derived_y_all
+        .as_deref()
+        .unwrap_or(&client_packing_keys.y_all);
+
+    let packed = packing_online(&precomp, y_all, &b_poly, &ctx);
+
+    Ok(ServerResponse {
+        ciphertext: packed,
+        column_ciphertexts: vec![],
+        packing_mode: Some(PackingMode::Inspiring),
+    })
+}
+
+/// Seeded sibling of [`respond_inspiring_cached`]. Expands the seeded
+/// query via `expand()` then delegates.
+pub fn respond_seeded_inspiring_cached(
+    crs: &ServerCrs,
+    encoded_db: &EncodedDatabase,
+    query: &SeededClientQuery,
+    cache: &ServerInspiringCache,
+) -> Result<ServerResponse> {
+    let expanded = query.expand();
+    respond_inspiring_cached(crs, encoded_db, &expanded, cache)
+}
+
+/// Handshake-aware variant of [`respond_inspiring_cached`]. Resolves
+/// the InspiRING client packing keys from a [`ServerSessionStore`]
+/// when the query carries a session handle; falls back to inlined
+/// `query.inspiring_packing_keys` when the handle is absent, which
+/// keeps the legacy wire format working for clients that have not
+/// adopted the handshake.
+///
+/// This is the compact wire-format entry point: queries that reference
+/// a handle drop their ~48 KiB `inspiring_packing_keys` payload.
+pub fn respond_inspiring_cached_with_session(
+    crs: &ServerCrs,
+    encoded_db: &EncodedDatabase,
+    query: &ClientQuery,
+    cache: &ServerInspiringCache,
+    session_store: Option<&super::session::ServerSessionStore>,
+) -> Result<ServerResponse> {
+    use crate::inspiring::{generate_rotations, packing_offline};
+
+    let d = crs.ring_dim();
+    let delta = crs.params.delta();
+    let ctx = crs.params.ntt_context();
+
+    // Resolve the packing keys: inlined from the query (pre-handshake)
+    // OR from the session store (handshake path). Exactly one must be
+    // present.
+    let resolved_keys = match (&query.inspiring_packing_keys, query.session_handle) {
+        (Some(inline), None) => PackingKeys::Inline(inline),
+        (None, Some(handle)) => {
+            let store = session_store.ok_or_else(|| {
+                pir_err!(
+                    "query references session_handle {:?} but no \
+                     ServerSessionStore was supplied to respond_*_with_session",
+                    handle
+                )
+            })?;
+            let arc = store.get(handle)?.ok_or_else(|| {
+                pir_err!(
+                    "ServerSessionStore has no entry for session_handle {:?}",
+                    handle
+                )
+            })?;
+            PackingKeys::Owned(arc)
+        }
+        (Some(_), Some(h)) => {
+            return Err(pir_err!(
+                "query has both inlined inspiring_packing_keys AND \
+                 session_handle {:?}; exactly one must be set",
+                h
+            ))
+        }
+        (None, None) => {
+            return Err(pir_err!(
+                "InspiRING client packing keys missing from query \
+                 (neither inlined nor session_handle set)"
+            ))
+        }
+    };
+    let client_packing_keys = resolved_keys.as_ref();
+
+    let shard = encoded_db
+        .shards
+        .iter()
+        .find(|s| s.id == query.shard_id)
+        .ok_or_else(|| pir_err!("Shard {} not found", query.shard_id))?;
+
+    if shard.polynomials.is_empty() {
+        let zero = RlweCiphertext::zero(&crs.params);
+        return Ok(ServerResponse {
+            ciphertext: zero.clone(),
+            column_ciphertexts: vec![zero],
+            packing_mode: None,
+        });
+    }
+
+    // Per-region timing gated behind the `RAVEN_PROFILE_RESPOND` env
+    // var. Zero overhead when off (single env-var read + branch per
+    // call). Set to any non-empty value to print a stderr breakdown
+    // after the call.
+    let profile = std::env::var_os("RAVEN_PROFILE_RESPOND").is_some();
+    let t_extprod_start = if profile {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
+
+    // Pre-NTT the RGSW rows ONCE before the par_iter. RGSW is constant
+    // across all columns of a shard, so forward-NTT of its 2ℓ row
+    // polynomials was being paid per-column. Amortized pre-conversion
+    // saves (num_cols − 1) × 2ℓ × 2 forward NTTs per query. Combined
+    // with `external_product_with_ntt_rgsw` which accumulates in NTT
+    // form until a single pair of inverse NTTs at the end.
+    //
+    // Byte-identical to the classical path (verified in
+    // `tests/external_product_ntt_kat.rs`).
+    let rgsw_ntt = rgsw_rows_to_ntt(&query.rgsw_ciphertext, &ctx);
+    let gadget = &query.rgsw_ciphertext.gadget;
+
+    let column_ciphertexts: Vec<RlweCiphertext> = shard
+        .polynomials
+        .par_iter()
+        .map(|db_poly| {
+            let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
+            external_product_with_ntt_rgsw(&rlwe_db, &rgsw_ntt, gadget, &ctx)
+        })
+        .collect();
+
+    let t_extprod_end = t_extprod_start.map(|s| s.elapsed());
+
+    let t_extract_start = t_extprod_end.map(|_| std::time::Instant::now());
+
+    let lwe_cts: Vec<_> = column_ciphertexts
+        .iter()
+        .map(|rlwe| rlwe.sample_extract_coeff0())
+        .collect();
+
+    let t_extract_end = t_extract_start.map(|s| s.elapsed());
+
+    let num_columns = lwe_cts.len();
+    if num_columns == 0 {
+        let zero = RlweCiphertext::zero(&crs.params);
+        return Ok(ServerResponse {
+            ciphertext: zero,
+            column_ciphertexts: vec![],
+            packing_mode: None,
+        });
+    }
+
+    let t_bpoly_start = t_extract_end.map(|_| std::time::Instant::now());
+
+    let a_ct_tilde: Vec<Poly> = column_ciphertexts
+        .iter()
+        .map(|rlwe| rlwe.a.clone())
+        .collect();
+
+    let mut b_coeffs = vec![0u64; d];
+    for (i, lwe) in lwe_cts.iter().enumerate() {
+        if i < d {
+            b_coeffs[i] = lwe.b;
+        }
+    }
+    let b_poly = Poly::from_coeffs_moduli(b_coeffs, crs.params.moduli());
+
+    let t_bpoly_end = t_bpoly_start.map(|s| s.elapsed());
+
+    let t_packoff_start = t_bpoly_end.map(|_| std::time::Instant::now());
+
+    let precomp = packing_offline(
+        &cache.pack_params,
+        &cache.offline_keys,
+        &a_ct_tilde,
+        &ctx,
+    );
+
+    let t_packoff_end = t_packoff_start.map(|s| s.elapsed());
+
+    let t_packonline_start = t_packoff_end.map(|_| std::time::Instant::now());
+
+    let derived_y_all = if client_packing_keys.y_all.is_empty() {
+        if client_packing_keys.y_body.is_empty() {
+            return Err(pir_err!(
+                "InspiRING packing keys invalid: y_all and y_body are both empty"
+            ));
+        }
+        Some(generate_rotations(
+            &cache.pack_params,
+            &client_packing_keys.y_body,
+        ))
+    } else {
+        None
+    };
+    let y_all: &[Vec<Poly>] = derived_y_all
+        .as_deref()
+        .unwrap_or(&client_packing_keys.y_all);
+
+    // Dispatch to `packing_online_fully_ntt` when the client packing
+    // keys already carry y_all_ntt (the in-process adapter case;
+    // wire-format deployments see y_all_ntt empty since it's
+    // `#[serde(skip)]`). The fully-NTT path skips per-call `to_ntt`
+    // on y_all + bold_t and runs pure pointwise multiply-accumulate
+    // inside the loop. Fall back to `packing_online` when y_all_ntt
+    // is empty.
+    //
+    // `RAVEN_FORCE_PACKING_ONLINE=1` forces the fallback branch so
+    // the wire-format delta can be measured. Zero cost when unset.
+    let force_packing_online =
+        std::env::var_os("RAVEN_FORCE_PACKING_ONLINE").is_some();
+    let packed = if !force_packing_online
+        && !client_packing_keys.y_all_ntt.is_empty()
+        && derived_y_all.is_none()
+    {
+        packing_online_fully_ntt(&precomp, &client_packing_keys.y_all_ntt, &b_poly, &ctx)
+    } else {
+        packing_online(&precomp, y_all, &b_poly, &ctx)
+    };
+
+    let t_packonline_end = t_packonline_start.map(|s| s.elapsed());
+
+    if profile {
+        // Emit as single-line CSV-ish record to stderr so a bench
+        // driver can grep/parse. Each field is microseconds.
+        if let (Some(e), Some(x), Some(b), Some(po), Some(pn)) = (
+            t_extprod_end,
+            t_extract_end,
+            t_bpoly_end,
+            t_packoff_end,
+            t_packonline_end,
+        ) {
+            eprintln!(
+                "RAVEN_PROFILE num_cols={} extprod_us={} extract_coeff0_us={} \
+                 bpoly_us={} pack_offline_us={} pack_online_us={}",
+                num_columns,
+                e.as_micros(),
+                x.as_micros(),
+                b.as_micros(),
+                po.as_micros(),
+                pn.as_micros()
+            );
+        }
+    }
+
+    Ok(ServerResponse {
+        ciphertext: packed,
+        column_ciphertexts: vec![],
+        packing_mode: Some(PackingMode::Inspiring),
+    })
+}
+
+/// Tiny wrapper that lets us hold either a borrowed reference to
+/// inlined packing keys OR an owned `Arc` from the session store
+/// without cloning the ~48 KiB payload in the inlined path.
+enum PackingKeys<'a> {
+    Inline(&'a crate::inspiring::ClientPackingKeys),
+    Owned(std::sync::Arc<crate::inspiring::ClientPackingKeys>),
+}
+
+impl<'a> PackingKeys<'a> {
+    fn as_ref(&self) -> &crate::inspiring::ClientPackingKeys {
+        match self {
+            PackingKeys::Inline(k) => k,
+            PackingKeys::Owned(arc) => arc.as_ref(),
+        }
+    }
+}
+
+/// Seeded sibling of [`respond_inspiring_cached_with_session`]. Same
+/// handshake semantics; expands the seeded RGSW then delegates.
+pub fn respond_seeded_inspiring_cached_with_session(
+    crs: &ServerCrs,
+    encoded_db: &EncodedDatabase,
+    query: &SeededClientQuery,
+    cache: &ServerInspiringCache,
+    session_store: Option<&super::session::ServerSessionStore>,
+) -> Result<ServerResponse> {
+    let expanded = query.expand();
+    respond_inspiring_cached_with_session(crs, encoded_db, &expanded, cache, session_store)
 }
 
 /// PIR.Respond with seeded query using InspiRING packing
@@ -458,13 +956,19 @@ pub fn respond_sequential(
         return Ok(ServerResponse {
             ciphertext: zero.clone(),
             column_ciphertexts: vec![zero],
+            packing_mode: None,
         });
     }
 
+    // Pre-NTT RGSW once before the sequential loop. Same NTT count
+    // reduction as the par_iter variants.
+    let rgsw_ntt_rows = rgsw_rows_to_ntt(&query.rgsw_ciphertext, &ctx);
+    let rgsw_gadget = &query.rgsw_ciphertext.gadget;
     let mut column_ciphertexts = Vec::with_capacity(shard.polynomials.len());
     for db_poly in &shard.polynomials {
         let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
-        let rotated = external_product(&rlwe_db, &query.rgsw_ciphertext, &ctx);
+        let rotated =
+            external_product_with_ntt_rgsw(&rlwe_db, &rgsw_ntt_rows, rgsw_gadget, &ctx);
         column_ciphertexts.push(rotated);
     }
 
@@ -480,200 +984,7 @@ pub fn respond_sequential(
     Ok(ServerResponse {
         ciphertext: combined,
         column_ciphertexts,
-    })
-}
-
-/// PIR.Respond using memory-mapped database
-///
-/// Same as `respond` but loads shards on-demand from disk.
-/// Use this for large databases that don't fit in RAM.
-#[cfg(feature = "server")]
-pub fn respond_mmap(
-    crs: &ServerCrs,
-    mmap_db: &MmapDatabase,
-    query: &ClientQuery,
-) -> Result<ServerResponse> {
-    let _d = crs.ring_dim();
-    let _q = crs.modulus();
-    let delta = crs.params.delta();
-
-    let shard = mmap_db.get_shard(query.shard_id)?;
-
-    if shard.polynomials.is_empty() {
-        let zero = RlweCiphertext::zero(&crs.params);
-        return Ok(ServerResponse {
-            ciphertext: zero.clone(),
-            column_ciphertexts: vec![zero],
-        });
-    }
-
-    let column_ciphertexts: Vec<RlweCiphertext> = shard
-        .polynomials
-        .par_iter()
-        .map(|db_poly| {
-            let local_ctx = crs.params.ntt_context();
-            let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
-            external_product(&rlwe_db, &query.rgsw_ciphertext, &local_ctx)
-        })
-        .collect();
-
-    let combined = if column_ciphertexts.len() == 1 {
-        column_ciphertexts[0].clone()
-    } else {
-        column_ciphertexts
-            .iter()
-            .skip(1)
-            .fold(column_ciphertexts[0].clone(), |acc, ct| acc.add(ct))
-    };
-
-    Ok(ServerResponse {
-        ciphertext: combined,
-        column_ciphertexts,
-    })
-}
-
-/// PIR.Respond with tree packing using memory-mapped database
-///
-/// Same as `respond_one_packing` but loads shards on-demand from disk.
-/// Returns a single packed RLWE ciphertext (32 KB) instead of 17 separate ones (544 KB).
-#[cfg(feature = "server")]
-pub fn respond_mmap_one_packing(
-    crs: &ServerCrs,
-    mmap_db: &MmapDatabase,
-    query: &ClientQuery,
-) -> Result<ServerResponse> {
-    use crate::inspiring::automorph_pack::pack_lwes;
-
-    let _d = crs.ring_dim();
-    let _q = crs.modulus();
-    let delta = crs.params.delta();
-
-    let shard = mmap_db.get_shard(query.shard_id)?;
-
-    if shard.polynomials.is_empty() {
-        let zero = RlweCiphertext::zero(&crs.params);
-        return Ok(ServerResponse {
-            ciphertext: zero,
-            column_ciphertexts: vec![],
-        });
-    }
-
-    let column_ciphertexts: Vec<RlweCiphertext> = shard
-        .polynomials
-        .par_iter()
-        .map(|db_poly| {
-            let local_ctx = crs.params.ntt_context();
-            let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
-            external_product(&rlwe_db, &query.rgsw_ciphertext, &local_ctx)
-        })
-        .collect();
-
-    let lwe_cts: Vec<_> = column_ciphertexts
-        .iter()
-        .map(|rlwe| rlwe.sample_extract_coeff0())
-        .collect();
-
-    let packed = pack_lwes(&lwe_cts, &crs.galois_keys, &crs.params);
-
-    Ok(ServerResponse {
-        ciphertext: packed,
-        column_ciphertexts: vec![],
-    })
-}
-
-/// PIR.Respond using InspiRING packing with memory-mapped database
-///
-/// Same as `respond_inspiring` but loads shards on-demand from disk.
-#[cfg(feature = "server")]
-pub fn respond_mmap_inspiring(
-    crs: &ServerCrs,
-    mmap_db: &MmapDatabase,
-    query: &ClientQuery,
-) -> Result<ServerResponse> {
-    use crate::inspiring::{generate_rotations, packing_offline, OfflinePackingKeys, PackParams};
-
-    let d = crs.ring_dim();
-    let delta = crs.params.delta();
-    let ctx = crs.params.ntt_context();
-
-    let client_packing_keys = query
-        .inspiring_packing_keys
-        .as_ref()
-        .ok_or_else(|| pir_err!("InspiRING client packing keys missing from query"))?;
-
-    let shard = mmap_db.get_shard(query.shard_id)?;
-
-    if shard.polynomials.is_empty() {
-        let zero = RlweCiphertext::zero(&crs.params);
-        return Ok(ServerResponse {
-            ciphertext: zero.clone(),
-            column_ciphertexts: vec![zero],
-        });
-    }
-
-    let column_ciphertexts: Vec<RlweCiphertext> = shard
-        .polynomials
-        .par_iter()
-        .map(|db_poly| {
-            let local_ctx = crs.params.ntt_context();
-            let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
-            external_product(&rlwe_db, &query.rgsw_ciphertext, &local_ctx)
-        })
-        .collect();
-
-    let lwe_cts: Vec<_> = column_ciphertexts
-        .iter()
-        .map(|rlwe| rlwe.sample_extract_coeff0())
-        .collect();
-
-    let num_columns = lwe_cts.len();
-    if num_columns == 0 {
-        let zero = RlweCiphertext::zero(&crs.params);
-        return Ok(ServerResponse {
-            ciphertext: zero,
-            column_ciphertexts: vec![],
-        });
-    }
-
-    let a_ct_tilde: Vec<Poly> = column_ciphertexts
-        .iter()
-        .map(|rlwe| rlwe.a.clone())
-        .collect();
-
-    let mut b_coeffs = vec![0u64; d];
-    for (i, lwe) in lwe_cts.iter().enumerate() {
-        if i < d {
-            b_coeffs[i] = lwe.b;
-        }
-    }
-    let b_poly = Poly::from_coeffs_moduli(b_coeffs, crs.params.moduli());
-
-    let pack_params = PackParams::new(&crs.params, num_columns);
-    let offline_keys = OfflinePackingKeys::generate(&pack_params, crs.inspiring_w_seed);
-    let precomp = packing_offline(&pack_params, &offline_keys, &a_ct_tilde, &ctx);
-
-    let derived_y_all = if client_packing_keys.y_all.is_empty() {
-        if client_packing_keys.y_body.is_empty() {
-            return Err(pir_err!(
-                "InspiRING packing keys invalid: y_all and y_body are both empty"
-            ));
-        }
-        Some(generate_rotations(
-            &pack_params,
-            &client_packing_keys.y_body,
-        ))
-    } else {
-        None
-    };
-    let y_all: &[Vec<Poly>] = derived_y_all
-        .as_deref()
-        .unwrap_or(&client_packing_keys.y_all);
-
-    let packed = packing_online(&precomp, y_all, &b_poly, &ctx);
-
-    Ok(ServerResponse {
-        ciphertext: packed,
-        column_ciphertexts: vec![],
+        packing_mode: None,
     })
 }
 
@@ -781,99 +1092,6 @@ mod tests {
         assert_eq!(combined.b.coeff(0), 300);
     }
 
-    #[cfg(feature = "server")]
-    #[test]
-    fn test_respond_mmap() {
-        use crate::pir::save_shards_binary;
-        use tempfile::tempdir;
-
-        let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
-
-        let entry_size = 32;
-        let num_entries = params.ring_dim;
-        let database: Vec<u8> = (0..(num_entries * entry_size))
-            .map(|i| (i % 256) as u8)
-            .collect();
-
-        let (crs, encoded_db, rlwe_sk) =
-            setup(&params, &database, entry_size, &mut sampler).unwrap();
-
-        let dir = tempdir().unwrap();
-        save_shards_binary(&encoded_db.shards, dir.path()).unwrap();
-
-        let mmap_db = MmapDatabase::open(dir.path(), encoded_db.config.clone()).unwrap();
-
-        let target_index = 42u64;
-        let (_state, client_query) = query(
-            &crs,
-            target_index,
-            &encoded_db.config,
-            &rlwe_sk,
-            &mut sampler,
-        )
-        .unwrap();
-
-        let response_inmem = respond(&crs, &encoded_db, &client_query).unwrap();
-        let response_mmap = respond_mmap(&crs, &mmap_db, &client_query).unwrap();
-
-        assert_eq!(
-            response_inmem.ciphertext.ring_dim(),
-            response_mmap.ciphertext.ring_dim()
-        );
-        assert_eq!(
-            response_inmem.column_ciphertexts.len(),
-            response_mmap.column_ciphertexts.len()
-        );
-    }
-
-    #[cfg(feature = "server")]
-    #[test]
-    fn test_respond_mmap_inspiring() {
-        use crate::pir::{extract_inspiring, save_shards_binary};
-        use tempfile::tempdir;
-
-        let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
-
-        let entry_size = 2; // 1 column, values < 256
-        let num_entries = params.ring_dim;
-        let database: Vec<u8> = (0..num_entries)
-            .flat_map(|i| {
-                let low_byte = (i % 256) as u8;
-                let high_byte = 0u8;
-                vec![low_byte, high_byte]
-            })
-            .collect();
-
-        let (crs, encoded_db, rlwe_sk) =
-            setup(&params, &database, entry_size, &mut sampler).unwrap();
-
-        let dir = tempdir().unwrap();
-        save_shards_binary(&encoded_db.shards, dir.path()).unwrap();
-
-        let mmap_db = MmapDatabase::open(dir.path(), encoded_db.config.clone()).unwrap();
-
-        let target_index = 42u64;
-        let (state, client_query) = query(
-            &crs,
-            target_index,
-            &encoded_db.config,
-            &rlwe_sk,
-            &mut sampler,
-        )
-        .unwrap();
-
-        let response_inmem = respond_inspiring(&crs, &encoded_db, &client_query).unwrap();
-        let response_mmap = respond_mmap_inspiring(&crs, &mmap_db, &client_query).unwrap();
-        let extracted_inmem = extract_inspiring(&crs, &state, &response_inmem, entry_size).unwrap();
-        let extracted_mmap = extract_inspiring(&crs, &state, &response_mmap, entry_size).unwrap();
-
-        let expected_start = (target_index as usize) * entry_size;
-        let expected = &database[expected_start..expected_start + entry_size];
-        assert_eq!(extracted_inmem.as_slice(), expected);
-        assert_eq!(extracted_mmap.as_slice(), expected);
-    }
 
     #[test]
     fn test_respond_one_packing_correctness() {
