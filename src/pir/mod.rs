@@ -59,12 +59,12 @@ pub use query::{
     query, query_seeded, ClientQuery, ClientState, PackingMode, SeededClientQuery,
     ServerSessionHandle,
 };
-pub use session::{ClientSession, ServerSessionStore};
 pub use respond::{
     respond, respond_inspiring, respond_inspiring_cached, respond_inspiring_cached_with_session,
-    respond_one_packing, respond_seeded, respond_seeded_inspiring,
-    respond_seeded_inspiring_cached, respond_seeded_inspiring_cached_with_session,
-    respond_seeded_packed, respond_seeded_with_variant, respond_sequential, respond_with_variant,
-    ServerInspiringCache, ServerResponse,
+    respond_one_packing, respond_seeded, respond_seeded_inspiring, respond_seeded_inspiring_cached,
+    respond_seeded_inspiring_cached_with_session, respond_seeded_packed,
+    respond_seeded_with_variant, respond_sequential, respond_with_variant, ServerInspiringCache,
+    ServerResponse,
 };
+pub use session::{ClientSession, ServerSessionStore};
 pub use setup::{setup, EncodedDatabase, InspireCrs, ServerCrs, ShardData};

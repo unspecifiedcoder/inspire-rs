@@ -14,9 +14,7 @@
 //! See the theoretical bounds documentation for the full
 //! noise-budget proof.
 
-use raven_inspire::params::{
-    derive_medium_payload, AdaptiveInputs, InspireParams, SecurityLevel,
-};
+use raven_inspire::params::{derive_medium_payload, AdaptiveInputs, InspireParams, SecurityLevel};
 
 #[test]
 fn slo_cell_derivation_matches_reference() {
@@ -72,14 +70,19 @@ fn for_scenario_bridges_to_inspire_params_byte_identical() {
     assert_eq!(params.ring_dim, 2048);
     assert_eq!(params.crt_moduli, vec![67_043_329u64, 132_120_577u64]);
     assert_eq!(params.q, 67_043_329u64 * 132_120_577u64);
-    assert_eq!(params.p, 65537, "Fermat F4 preserved for d-inverse invariant");
+    assert_eq!(
+        params.p, 65537,
+        "Fermat F4 preserved for d-inverse invariant"
+    );
     assert_eq!(params.sigma.to_bits(), 6.4f64.to_bits());
     assert_eq!(params.gadget_base, 1u64 << 19);
     assert_eq!(params.gadget_len, 3);
     assert_eq!(params.security_level, SecurityLevel::Bits128);
 
     // validate() passes: NTT-friendliness + CRT-coprimality + q >= p.
-    params.validate().expect("derived params must self-validate");
+    params
+        .validate()
+        .expect("derived params must self-validate");
 }
 
 #[test]

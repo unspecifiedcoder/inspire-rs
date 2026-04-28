@@ -88,8 +88,14 @@ fn microbench_ifma52_x8_vs_montgomery_pointwise() {
     let speedup = mont_ns_per / ifma_ns_per;
 
     eprintln!("=== Pointwise mul at n={N}, {ITERS} iters, DEFAULT_Q ===");
-    eprintln!("  Montgomery scalar: {mont_ns_per:.1} ns/call  ({:.3} μs)", mont_ns_per / 1000.0);
-    eprintln!("  IFMA52 8-wide:     {ifma_ns_per:.1} ns/call  ({:.3} μs)", ifma_ns_per / 1000.0);
+    eprintln!(
+        "  Montgomery scalar: {mont_ns_per:.1} ns/call  ({:.3} μs)",
+        mont_ns_per / 1000.0
+    );
+    eprintln!(
+        "  IFMA52 8-wide:     {ifma_ns_per:.1} ns/call  ({:.3} μs)",
+        ifma_ns_per / 1000.0
+    );
     eprintln!("  Speedup:           {speedup:.3}x");
 
     // Correctness spot-check after the timing: byte-identical results at

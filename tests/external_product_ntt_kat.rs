@@ -132,10 +132,6 @@ fn external_product_ntt_preserves_correctness_rgsw_scalar() {
 
     for (i, msg_coeff) in msg_coeffs.iter().enumerate().take(p.ring_dim) {
         let expected = (*msg_coeff * scalar) % p.p;
-        assert_eq!(
-            decrypted.coeff(i),
-            expected,
-            "Mismatch at coefficient {i}"
-        );
+        assert_eq!(decrypted.coeff(i), expected, "Mismatch at coefficient {i}");
     }
 }

@@ -136,8 +136,18 @@ fn ensure_server_derivatives_byte_identical_to_client_generation() {
                 i,
                 k
             );
-            assert!(p_got.is_ntt(), "y_all_ntt[{}][{}] must be in NTT form", i, k);
-            assert!(p_want.is_ntt(), "expected y_all_ntt[{}][{}] must be in NTT form", i, k);
+            assert!(
+                p_got.is_ntt(),
+                "y_all_ntt[{}][{}] must be in NTT form",
+                i,
+                k
+            );
+            assert!(
+                p_want.is_ntt(),
+                "expected y_all_ntt[{}][{}] must be in NTT form",
+                i,
+                k
+            );
         }
     }
 }
@@ -151,8 +161,7 @@ fn ensure_server_derivatives_is_noop_when_populated() {
 
     let mut sampler = GaussianSampler::new(params.sigma);
     let rlwe_sk = RlweSecretKey::generate(&params, &mut sampler);
-    let mut keys =
-        ClientPackingKeys::generate(&rlwe_sk, &pack_params, [7u8; 32], &mut sampler);
+    let mut keys = ClientPackingKeys::generate(&rlwe_sk, &pack_params, [7u8; 32], &mut sampler);
 
     let y_all_snapshot: Vec<Vec<Vec<u64>>> = keys
         .y_all
@@ -201,21 +210,27 @@ fn bincode_roundtrip_then_server_derive_matches_original_y_all_ntt() {
 
     let mut sampler = GaussianSampler::new(params.sigma);
     let rlwe_sk = RlweSecretKey::generate(&params, &mut sampler);
-    let original =
-        ClientPackingKeys::generate(&rlwe_sk, &pack_params, [42u8; 32], &mut sampler);
+    let original = ClientPackingKeys::generate(&rlwe_sk, &pack_params, [42u8; 32], &mut sampler);
 
     // Simulate wire transport.
     let bytes = bincode::serialize(&original).expect("bincode serialize");
-    let mut wire: ClientPackingKeys =
-        bincode::deserialize(&bytes).expect("bincode deserialize");
+    let mut wire: ClientPackingKeys = bincode::deserialize(&bytes).expect("bincode deserialize");
     assert!(wire.y_all.is_empty(), "serde(skip) drops y_all on the wire");
-    assert!(wire.y_all_ntt.is_empty(), "serde(skip) drops y_all_ntt on the wire");
+    assert!(
+        wire.y_all_ntt.is_empty(),
+        "serde(skip) drops y_all_ntt on the wire"
+    );
 
     wire.ensure_server_derivatives(&pack_params, &ctx);
 
     assert_eq!(wire.y_all.len(), original.y_all.len());
     assert_eq!(wire.y_all_ntt.len(), original.y_all_ntt.len());
-    for (i, (got, want)) in wire.y_all_ntt.iter().zip(original.y_all_ntt.iter()).enumerate() {
+    for (i, (got, want)) in wire
+        .y_all_ntt
+        .iter()
+        .zip(original.y_all_ntt.iter())
+        .enumerate()
+    {
         for (k, (pg, pw)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(
                 pg.coeffs(),

@@ -110,11 +110,7 @@ pub mod avx512_ifma {
     /// is true on the executing CPU.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
-    pub unsafe fn solinas_mont_mul_x8(
-        a: __m512i,
-        b: __m512i,
-        q_inv_neg_vec: __m512i,
-    ) -> __m512i {
+    pub unsafe fn solinas_mont_mul_x8(a: __m512i, b: __m512i, q_inv_neg_vec: __m512i) -> __m512i {
         let mask52 = _mm512_set1_epi64(MASK52 as i64);
         let q_vec = _mm512_set1_epi64(DEFAULT_Q as i64);
         let zero = _mm512_setzero_si512();
@@ -133,17 +129,11 @@ pub mod avx512_ifma {
         let p01_hi = _mm512_madd52hi_epu64(zero, a_lo, b_hi);
         let p11_lo = _mm512_madd52lo_epu64(zero, a_hi, b_hi);
 
-        let cross_mid = _mm512_add_epi64(
-            _mm512_add_epi64(p00_hi, p10_lo),
-            p01_lo,
-        );
+        let cross_mid = _mm512_add_epi64(_mm512_add_epi64(p00_hi, p10_lo), p01_lo);
         let cross_mid_lo52 = _mm512_and_si512(cross_mid, mask52);
         let cross_mid_carry = _mm512_srli_epi64::<52>(cross_mid);
 
-        let upper_9 = _mm512_add_epi64(
-            _mm512_add_epi64(p10_hi, p01_hi),
-            cross_mid_carry,
-        );
+        let upper_9 = _mm512_add_epi64(_mm512_add_epi64(p10_hi, p01_hi), cross_mid_carry);
         let mask8 = _mm512_set1_epi64(0xFFi64);
         let p11_low8 = _mm512_and_si512(p11_lo, mask8);
         let p11_high = _mm512_srli_epi64::<8>(p11_lo);
@@ -155,10 +145,7 @@ pub mod avx512_ifma {
         let upper_plus_low = _mm512_add_epi64(upper_9, p11_low8);
         let upper_shifted = _mm512_slli_epi64::<40>(upper_plus_low);
         let p11_hi_shifted = _mm512_slli_epi64::<48>(p11_high);
-        let ab_hi = _mm512_add_epi64(
-            _mm512_add_epi64(cm_top, upper_shifted),
-            p11_hi_shifted,
-        );
+        let ab_hi = _mm512_add_epi64(_mm512_add_epi64(cm_top, upper_shifted), p11_hi_shifted);
 
         // --- Step 2: m = ab_lo · q_inv_neg mod 2^64 ---
         let m = _mm512_mullo_epi64(ab_lo, q_inv_neg_vec);
@@ -184,10 +171,7 @@ pub mod avx512_ifma {
         let borrow_mask = _mm512_cmplt_epu64_mask(mq_60_lo, mq_14_lo);
         let one = _mm512_set1_epi64(1i64);
         let borrow = _mm512_maskz_mov_epi64(borrow_mask, one);
-        let diff_hi = _mm512_sub_epi64(
-            _mm512_sub_epi64(mq_60_hi, mq_14_hi),
-            borrow,
-        );
+        let diff_hi = _mm512_sub_epi64(_mm512_sub_epi64(mq_60_hi, mq_14_hi), borrow);
 
         // Add m to the lo half (u128 add with carry-forward):
         let mq_lo = _mm512_add_epi64(diff_lo, m);
@@ -199,10 +183,7 @@ pub mod avx512_ifma {
         let sum_lo = _mm512_add_epi64(ab_lo, mq_lo);
         let sum_carry_mask = _mm512_cmplt_epu64_mask(sum_lo, ab_lo);
         let sum_carry = _mm512_maskz_mov_epi64(sum_carry_mask, one);
-        let t = _mm512_add_epi64(
-            _mm512_add_epi64(ab_hi, mq_hi),
-            sum_carry,
-        );
+        let t = _mm512_add_epi64(_mm512_add_epi64(ab_hi, mq_hi), sum_carry);
 
         // --- Step 5: Conditional subtract ---
         let ge_mask = _mm512_cmpge_epu64_mask(t, q_vec);

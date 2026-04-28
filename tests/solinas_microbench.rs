@@ -148,8 +148,14 @@ fn microbench_solinas_pointwise_all_variants() {
             mont_ns / sol_ifma_ns
         );
         eprintln!();
-        eprintln!("  IFMA52 Solinas vs IFMA52 split-52: {:.3}x", ifma52_ns / sol_ifma_ns);
-        eprintln!("  Scalar Solinas vs scalar Mont:     {:.3}x", mont_ns / sol_scalar_ns);
+        eprintln!(
+            "  IFMA52 Solinas vs IFMA52 split-52: {:.3}x",
+            ifma52_ns / sol_ifma_ns
+        );
+        eprintln!(
+            "  Scalar Solinas vs scalar Mont:     {:.3}x",
+            mont_ns / sol_scalar_ns
+        );
     }
 
     // Correctness spot-check.

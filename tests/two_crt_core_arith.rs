@@ -61,7 +61,10 @@ fn two_crt_scalar_mul_vs_naive() {
     for i in 0..8 {
         let expected = ((i as u128 * 1_000_000 * scalar as u128) % q as u128) as u64;
         let got = product.coeff(i);
-        assert_eq!(got, expected, "scalar_mul mismatch @ i={i}: {got} vs {expected}");
+        assert_eq!(
+            got, expected,
+            "scalar_mul mismatch @ i={i}: {got} vs {expected}"
+        );
     }
 }
 

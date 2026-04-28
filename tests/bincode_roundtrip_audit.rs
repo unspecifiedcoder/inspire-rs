@@ -20,8 +20,8 @@
 use raven_inspire::math::GaussianSampler;
 use raven_inspire::params::{InspireParams, SecurityLevel};
 use raven_inspire::{
-    extract_inspiring, query, query_seeded, respond, respond_seeded_inspiring, setup,
-    PackingMode, ServerResponse, ServerSessionHandle,
+    extract_inspiring, query, query_seeded, respond, respond_seeded_inspiring, setup, PackingMode,
+    ServerResponse, ServerSessionHandle,
 };
 
 /// Small params for fast roundtrip tests.
@@ -106,8 +106,7 @@ fn seeded_client_query_session_handle_both_states_bincode_stable() {
     let n = params.ring_dim;
     let db: Vec<u8> = (0..n * entry_size).map(|i| (i % 256) as u8).collect();
     let (crs, encoded_db, sk) = setup(&params, &db, entry_size, &mut sampler).unwrap();
-    let (_state, mut sq) =
-        query_seeded(&crs, 17, &encoded_db.config, &sk, &mut sampler).unwrap();
+    let (_state, mut sq) = query_seeded(&crs, 17, &encoded_db.config, &sk, &mut sampler).unwrap();
 
     sq.session_handle = None;
     bincode_roundtrip_stable(&sq, "SeededClientQuery.session_handle = None");
@@ -170,8 +169,7 @@ fn end_to_end_seeded_response_bincode_stable_across_packing_modes() {
         let (state, mut sq) =
             query_seeded(&crs, *idx, &encoded_db.config, &sk, &mut sampler).unwrap();
         sq.packing_mode = PackingMode::Inspiring;
-        let response: ServerResponse =
-            respond_seeded_inspiring(&crs, &encoded_db, &sq).unwrap();
+        let response: ServerResponse = respond_seeded_inspiring(&crs, &encoded_db, &sq).unwrap();
         bincode_roundtrip_stable(&response, &format!("ServerResponse @ idx={idx}"));
         let recovered = extract_inspiring(&crs, &state, &response, entry_size).unwrap();
         // DB generator above emits [(i % 256), 0] per entry, so the

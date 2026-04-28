@@ -94,14 +94,12 @@ fn solinas_forward_convolution_matches_naive_mul() {
             let prod = (a[i] as u128 * b[j] as u128) % q as u128;
             let idx = i + j;
             if idx < n {
-                c_naive[idx] =
-                    ((c_naive[idx] as u128 + prod) % q as u128) as u64;
+                c_naive[idx] = ((c_naive[idx] as u128 + prod) % q as u128) as u64;
             } else {
                 let wrap = idx - n;
                 // Negacyclic: X^n = -1, so these contribute -1 times.
                 let q128 = q as u128;
-                c_naive[wrap] =
-                    ((c_naive[wrap] as u128 + q128 - prod) % q128) as u64;
+                c_naive[wrap] = ((c_naive[wrap] as u128 + q128 - prod) % q128) as u64;
             }
         }
     }

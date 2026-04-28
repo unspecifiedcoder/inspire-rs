@@ -370,7 +370,6 @@ pub fn respond_inspiring(
         .polynomials
         .par_iter()
         .map(|db_poly| {
-
             let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
             external_product_with_ntt_rgsw(&rlwe_db, &rgsw_ntt_rows, rgsw_gadget, &ctx)
         })
@@ -543,7 +542,6 @@ pub fn respond_inspiring_cached(
         .polynomials
         .par_iter()
         .map(|db_poly| {
-
             let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
             external_product_with_ntt_rgsw(&rlwe_db, &rgsw_ntt_rows, rgsw_gadget, &ctx)
         })
@@ -580,12 +578,7 @@ pub fn respond_inspiring_cached(
     // Cached: `pack_params` and `offline_keys` come from the cache
     // instead of being rebuilt here. `packing_offline` still runs
     // per-query because it consumes `a_ct_tilde`.
-    let precomp = packing_offline(
-        &cache.pack_params,
-        &cache.offline_keys,
-        &a_ct_tilde,
-        &ctx,
-    );
+    let precomp = packing_offline(&cache.pack_params, &cache.offline_keys, &a_ct_tilde, &ctx);
 
     let derived_y_all = if client_packing_keys.y_all.is_empty() {
         if client_packing_keys.y_body.is_empty() {
@@ -771,12 +764,7 @@ pub fn respond_inspiring_cached_with_session(
 
     let t_packoff_start = t_bpoly_end.map(|_| std::time::Instant::now());
 
-    let precomp = packing_offline(
-        &cache.pack_params,
-        &cache.offline_keys,
-        &a_ct_tilde,
-        &ctx,
-    );
+    let precomp = packing_offline(&cache.pack_params, &cache.offline_keys, &a_ct_tilde, &ctx);
 
     let t_packoff_end = t_packoff_start.map(|s| s.elapsed());
 
@@ -809,8 +797,7 @@ pub fn respond_inspiring_cached_with_session(
     //
     // `RAVEN_FORCE_PACKING_ONLINE=1` forces the fallback branch so
     // the wire-format delta can be measured. Zero cost when unset.
-    let force_packing_online =
-        std::env::var_os("RAVEN_FORCE_PACKING_ONLINE").is_some();
+    let force_packing_online = std::env::var_os("RAVEN_FORCE_PACKING_ONLINE").is_some();
     let packed = if !force_packing_online
         && !client_packing_keys.y_all_ntt.is_empty()
         && derived_y_all.is_none()
@@ -967,8 +954,7 @@ pub fn respond_sequential(
     let mut column_ciphertexts = Vec::with_capacity(shard.polynomials.len());
     for db_poly in &shard.polynomials {
         let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
-        let rotated =
-            external_product_with_ntt_rgsw(&rlwe_db, &rgsw_ntt_rows, rgsw_gadget, &ctx);
+        let rotated = external_product_with_ntt_rgsw(&rlwe_db, &rgsw_ntt_rows, rgsw_gadget, &ctx);
         column_ciphertexts.push(rotated);
     }
 
@@ -1091,7 +1077,6 @@ mod tests {
 
         assert_eq!(combined.b.coeff(0), 300);
     }
-
 
     #[test]
     fn test_respond_one_packing_correctness() {

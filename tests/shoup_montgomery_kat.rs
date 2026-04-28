@@ -201,7 +201,16 @@ fn shoup_edge_cases_default_q() {
     let ctx = NttContext::with_default_q(n);
     let q = DEFAULT_Q;
 
-    let edges = [0u64, 1, 2, q - 1, q - 2, (1u64 << 32), (1u64 << 52) - 1, (1u64 << 52)];
+    let edges = [
+        0u64,
+        1,
+        2,
+        q - 1,
+        q - 2,
+        (1u64 << 32),
+        (1u64 << 52) - 1,
+        (1u64 << 52),
+    ];
     for &a in &edges {
         if a >= q {
             continue;

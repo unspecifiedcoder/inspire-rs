@@ -7,12 +7,10 @@
 use raven_inspire::math::GaussianSampler;
 use raven_inspire::params::{InspireParams, InspireVariant, SecurityLevel, ShardConfig};
 
-
 use raven_inspire::{
-    encode_database, setup,
-    extract_inspiring, extract_with_variant, query_seeded, respond_seeded_inspiring,
-    respond_seeded_inspiring_cached_with_session, respond_with_variant, ClientSession,
-    PackingMode, ServerInspiringCache, ServerResponse, ServerSessionStore,
+    encode_database, extract_inspiring, extract_with_variant, query_seeded,
+    respond_seeded_inspiring, respond_seeded_inspiring_cached_with_session, respond_with_variant,
+    setup, ClientSession, PackingMode, ServerInspiringCache, ServerResponse, ServerSessionStore,
 };
 
 /// Small params for fast correctness tests.
@@ -89,8 +87,7 @@ fn commit_b_respond_with_variant_twopacking_returns_error() {
         .expect_err("TwoPacking on unseeded query must return a typed error");
     let msg = err.to_string();
     assert!(
-        msg.to_lowercase().contains("seeded")
-            || msg.to_lowercase().contains("twopacking"),
+        msg.to_lowercase().contains("seeded") || msg.to_lowercase().contains("twopacking"),
         "error must direct to the seeded path; got: {msg}"
     );
 }
@@ -111,18 +108,30 @@ fn commit_c_extract_with_variant_handles_inspiring_response() {
     let (crs, encoded_db, rlwe_sk) = setup(&params, &db, entry_size, &mut sampler).unwrap();
 
     let target_index = 17u64;
-    let (state, mut seeded_query) =
-        query_seeded(&crs, target_index, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
+    let (state, mut seeded_query) = query_seeded(
+        &crs,
+        target_index,
+        &encoded_db.config,
+        &rlwe_sk,
+        &mut sampler,
+    )
+    .unwrap();
     seeded_query.packing_mode = PackingMode::Inspiring;
-    let response: ServerResponse = respond_seeded_inspiring(&crs, &encoded_db, &seeded_query).unwrap();
+    let response: ServerResponse =
+        respond_seeded_inspiring(&crs, &encoded_db, &seeded_query).unwrap();
 
     // The canonical path: `extract_inspiring` direct.
     let via_inspiring = extract_inspiring(&crs, &state, &response, entry_size).unwrap();
     // Commit C makes `extract_with_variant(TwoPacking)` match the canonical
     // path for InspiRING-shaped responses. The two outputs must be equal.
-    let via_wrapper =
-        extract_with_variant(&crs, &state, &response, entry_size, InspireVariant::TwoPacking)
-            .unwrap();
+    let via_wrapper = extract_with_variant(
+        &crs,
+        &state,
+        &response,
+        entry_size,
+        InspireVariant::TwoPacking,
+    )
+    .unwrap();
 
     assert_eq!(via_inspiring, via_wrapper, "commit C must route TwoPacking extraction to extract_inspiring for InspiRING-shaped responses");
     // Also verify the extracted value matches the planted entry.
@@ -211,8 +220,7 @@ fn phase_b_handshake_roundtrip_byte_equal_to_inlined_keys() {
     let session_store = ServerSessionStore::new();
 
     // Inlined-keys baseline (pre-handshake wire format).
-    let session_inline =
-        ClientSession::new(crs.clone(), rlwe_sk.clone(), &mut sampler).unwrap();
+    let session_inline = ClientSession::new(crs.clone(), rlwe_sk.clone(), &mut sampler).unwrap();
     assert!(session_inline.session_handle().is_none());
 
     let (state_inline, mut q_inline) = session_inline
