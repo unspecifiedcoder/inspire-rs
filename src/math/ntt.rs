@@ -707,8 +707,16 @@ impl NttContext {
     /// Panics if the context is not configured for single-prime
     /// DEFAULT_Q or if `coeffs.len() != n`.
     pub fn forward_solinas(&self, coeffs: &mut [u64]) {
-        assert_eq!(self.moduli.len(), 1, "Solinas path is single-prime DEFAULT_Q only");
-        assert_eq!(self.moduli[0], super::mod_q::DEFAULT_Q, "Solinas path requires DEFAULT_Q");
+        assert_eq!(
+            self.moduli.len(),
+            1,
+            "Solinas path is single-prime DEFAULT_Q only"
+        );
+        assert_eq!(
+            self.moduli[0],
+            super::mod_q::DEFAULT_Q,
+            "Solinas path requires DEFAULT_Q"
+        );
         assert_eq!(coeffs.len(), self.n, "Input length must match dimension");
 
         let q = self.moduli[0];
@@ -726,8 +734,16 @@ impl NttContext {
     /// Inverse NTT in Solinas-Montgomery mode, DEFAULT_Q single-prime
     /// only. Inputs/outputs in Montgomery form.
     pub fn inverse_solinas(&self, coeffs: &mut [u64]) {
-        assert_eq!(self.moduli.len(), 1, "Solinas path is single-prime DEFAULT_Q only");
-        assert_eq!(self.moduli[0], super::mod_q::DEFAULT_Q, "Solinas path requires DEFAULT_Q");
+        assert_eq!(
+            self.moduli.len(),
+            1,
+            "Solinas path is single-prime DEFAULT_Q only"
+        );
+        assert_eq!(
+            self.moduli[0],
+            super::mod_q::DEFAULT_Q,
+            "Solinas path requires DEFAULT_Q"
+        );
         assert_eq!(coeffs.len(), self.n, "Input length must match dimension");
 
         self.inverse_inplace_solinas_at(coeffs, 0);
@@ -794,11 +810,8 @@ impl NttContext {
                     let v = coeffs[j + t];
                     coeffs[j] = if u + v >= q { u + v - q } else { u + v };
                     let diff = if u >= v { u - v } else { q - v + u };
-                    coeffs[j + t] = super::solinas_redc::solinas_mont_mul_default_q(
-                        diff,
-                        w,
-                        q_inv_neg,
-                    );
+                    coeffs[j + t] =
+                        super::solinas_redc::solinas_mont_mul_default_q(diff, w, q_inv_neg);
                 }
             }
             t <<= 1;
@@ -806,19 +819,23 @@ impl NttContext {
 
         // Scale by n^(-1) (in Montgomery form, same as classical `inverse_inplace`).
         for c in coeffs.iter_mut() {
-            *c = super::solinas_redc::solinas_mont_mul_default_q(
-                *c,
-                self.n_inv[idx],
-                q_inv_neg,
-            );
+            *c = super::solinas_redc::solinas_mont_mul_default_q(*c, self.n_inv[idx], q_inv_neg);
         }
     }
 
     /// Pointwise NTT-domain multiplication using Solinas-REDC, DEFAULT_Q
     /// single-prime only. Both inputs + output in Montgomery form.
     pub fn pointwise_mul_solinas(&self, a: &[u64], b: &[u64], result: &mut [u64]) {
-        assert_eq!(self.moduli.len(), 1, "Solinas path is single-prime DEFAULT_Q only");
-        assert_eq!(self.moduli[0], super::mod_q::DEFAULT_Q, "Solinas path requires DEFAULT_Q");
+        assert_eq!(
+            self.moduli.len(),
+            1,
+            "Solinas path is single-prime DEFAULT_Q only"
+        );
+        assert_eq!(
+            self.moduli[0],
+            super::mod_q::DEFAULT_Q,
+            "Solinas path requires DEFAULT_Q"
+        );
         assert_eq!(a.len(), self.n);
         assert_eq!(b.len(), self.n);
         assert_eq!(result.len(), self.n);
@@ -985,7 +1002,10 @@ impl NttContext {
     /// the Shoup multiply (`shoup_mul_at`) to skip a Montgomery-style u64
     /// multiplication + add-shift on every inner butterfly multiply.
     fn compute_shoup_twins(factors: &[u64], q: u64) -> Vec<u64> {
-        factors.iter().map(|&b| Self::shoup_precompute(b, q)).collect()
+        factors
+            .iter()
+            .map(|&b| Self::shoup_precompute(b, q))
+            .collect()
     }
 
     /// Precompute `floor(b · 2^64 / q)` for Shoup multiplication with a

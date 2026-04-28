@@ -53,9 +53,7 @@ use crate::rlwe::RlweSecretKey;
 
 use super::encode_db::inverse_monomial;
 use super::error::{pir_err, Result};
-use super::query::{
-    ClientQuery, ClientState, PackingMode, SeededClientQuery, ServerSessionHandle,
-};
+use super::query::{ClientQuery, ClientState, PackingMode, SeededClientQuery, ServerSessionHandle};
 use super::setup::ServerCrs;
 
 /// Long-lived client-side state that captures everything a client
@@ -124,8 +122,7 @@ impl ClientSession {
             && crs.inspiring_num_columns > 0
         {
             let pp = PackParams::new(&crs.params, crs.inspiring_num_columns);
-            let keys =
-                ClientPackingKeys::generate(&rlwe_sk, &pp, crs.inspiring_w_seed, sampler);
+            let keys = ClientPackingKeys::generate(&rlwe_sk, &pp, crs.inspiring_w_seed, sampler);
             (Some(pp), Some(keys))
         } else {
             (None, None)
@@ -427,9 +424,10 @@ impl ServerSessionStore {
     /// Handles are monotonically increasing; collisions are impossible
     /// within the lifetime of a single store.
     pub fn register(&self, keys: ClientPackingKeys) -> Result<ServerSessionHandle> {
-        let mut inner = self.inner.write().map_err(|_| {
-            pir_err!("ServerSessionStore: lock poisoned on register")
-        })?;
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| pir_err!("ServerSessionStore: lock poisoned on register"))?;
         let h = inner.next_handle;
         inner.next_handle = inner.next_handle.checked_add(1).unwrap_or(0);
         inner.by_handle.insert(h, Arc::new(keys));
@@ -466,13 +464,11 @@ impl ServerSessionStore {
 
     /// Look up the packing keys stored under `handle`. Returns `None`
     /// if no such handle exists.
-    pub fn get(
-        &self,
-        handle: ServerSessionHandle,
-    ) -> Result<Option<Arc<ClientPackingKeys>>> {
-        let inner = self.inner.read().map_err(|_| {
-            pir_err!("ServerSessionStore: lock poisoned on get")
-        })?;
+    pub fn get(&self, handle: ServerSessionHandle) -> Result<Option<Arc<ClientPackingKeys>>> {
+        let inner = self
+            .inner
+            .read()
+            .map_err(|_| pir_err!("ServerSessionStore: lock poisoned on get"))?;
         Ok(inner.by_handle.get(&handle.0).cloned())
     }
 

@@ -19,7 +19,9 @@
 
 use raven_inspire::math::GaussianSampler;
 use raven_inspire::params::{InspireParams, SecurityLevel, DEFAULT_Q_2CRT_30BIT};
-use raven_inspire::{extract_inspiring, query_seeded, respond_seeded_inspiring, setup, PackingMode};
+use raven_inspire::{
+    extract_inspiring, query_seeded, respond_seeded_inspiring, setup, PackingMode,
+};
 
 fn base_params(ring_dim: usize, crt_moduli: Vec<u64>) -> InspireParams {
     let q: u64 = crt_moduli.iter().product();
@@ -100,7 +102,12 @@ fn commit_e_google_crt_d2048_multi_shard_small_records() {
     // Entries > ring_dim: multiple shards exercised.
     let crt = vec![67_043_329u64, 132_120_577u64];
     let params = base_params(2048, crt);
-    smoke_cell(&params, 1 << 14, 8, "google-crt d=2048 entries=2^14 rb=8 multi-shard");
+    smoke_cell(
+        &params,
+        1 << 14,
+        8,
+        "google-crt d=2048 entries=2^14 rb=8 multi-shard",
+    );
 }
 
 // 30-bit pair (~2^60 q) for kernel-safe u32-fit + DEFAULT_Q-class

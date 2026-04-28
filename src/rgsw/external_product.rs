@@ -76,8 +76,7 @@ fn gadget_decompose_default_q(poly: &Poly) -> Vec<Poly> {
         "gadget_decompose_default_q: caller must gate on single-prime moduli"
     );
     debug_assert_eq!(
-        moduli[0],
-        DEFAULT_Q,
+        moduli[0], DEFAULT_Q,
         "gadget_decompose_default_q: caller must gate on DEFAULT_Q"
     );
 
@@ -217,7 +216,11 @@ pub fn external_product_with_ntt_rgsw(
     let d = rlwe.ring_dim();
     let moduli = rlwe.a.moduli();
     let ell = gadget.len;
-    assert_eq!(rgsw_ntt.len(), 2 * ell, "RGSW NTT rows must have 2ℓ entries");
+    assert_eq!(
+        rgsw_ntt.len(),
+        2 * ell,
+        "RGSW NTT rows must have 2ℓ entries"
+    );
     assert_eq!(rlwe.b.moduli(), moduli, "RLWE components must share moduli");
     assert_eq!(
         ctx.moduli(),

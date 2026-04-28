@@ -133,15 +133,7 @@ fn mont_mul_split52_edge_cases_default_q() {
     let ctx = NttContext::with_default_q(2048);
     let q_inv_neg = ctx.q_inv_neg_for_test(0);
 
-    let edges: Vec<u64> = vec![
-        0,
-        1,
-        (1u64 << 52) - 1,
-        1u64 << 52,
-        q / 2,
-        q - 2,
-        q - 1,
-    ];
+    let edges: Vec<u64> = vec![0, 1, (1u64 << 52) - 1, 1u64 << 52, q / 2, q - 2, q - 1];
     for &a in &edges {
         if a >= q {
             continue;
@@ -242,6 +234,10 @@ fn ifma52_x8_matches_naive_default_q() {
     for i in 0..len {
         let got = ctx.from_mont(simd_out[i]);
         let want = naive_mul_mod(a_std[i], b_std[i], q);
-        assert_eq!(got, want, "lane {i}: a={} b={} got={} want={}", a_std[i], b_std[i], got, want);
+        assert_eq!(
+            got, want,
+            "lane {i}: a={} b={} got={} want={}",
+            a_std[i], b_std[i], got, want
+        );
     }
 }

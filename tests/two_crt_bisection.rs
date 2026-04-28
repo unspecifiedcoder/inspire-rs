@@ -79,8 +79,9 @@ fn smoke_twopacking_inspiring(
     let n = entries.saturating_sub(1).max(1);
     let indices: [u64; 3] = [n / 4, n / 2, (3 * n) / 4];
     for &idx in &indices {
-        let (state, mut seeded_query) = query_seeded(&crs, idx, &encoded_db.config, &sk, &mut sampler)
-            .map_err(|e| format!("query_seeded @ idx={idx}: {e:?}"))?;
+        let (state, mut seeded_query) =
+            query_seeded(&crs, idx, &encoded_db.config, &sk, &mut sampler)
+                .map_err(|e| format!("query_seeded @ idx={idx}: {e:?}"))?;
         seeded_query.packing_mode = PackingMode::Inspiring;
         let response = respond_seeded_inspiring(&crs, &encoded_db, &seeded_query)
             .map_err(|e| format!("respond_seeded_inspiring @ idx={idx}: {e:?}"))?;

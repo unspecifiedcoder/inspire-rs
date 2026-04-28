@@ -721,9 +721,7 @@ impl InspireParams {
         // from Theorem 4 holds. Each γ MUST be positive (zero-γ
         // means no packing + div-by-zero in derivation).
         if gammas[0] == 0 || gammas[1] == 0 || gammas[2] == 0 {
-            return Err(
-                "adaptive derivation: all γ values must be positive",
-            );
+            return Err("adaptive derivation: all γ values must be positive");
         }
         if !gammas[0].is_power_of_two() {
             return Err(
@@ -736,9 +734,7 @@ impl InspireParams {
             );
         }
         if performance_factor == 0 || !performance_factor.is_power_of_two() {
-            return Err(
-                "adaptive derivation: performance_factor must be a positive power of two",
-            );
+            return Err("adaptive derivation: performance_factor must be a positive power of two");
         }
 
         let inputs = AdaptiveInputs {
@@ -763,10 +759,7 @@ impl InspireParams {
         // Σ_i variance term must fit under log2(q); otherwise the
         // decryption error exceeds the budget.
         let log2_q = d.custom_q_log2;
-        if d.term_0_variance > log2_q
-            || d.term_1_variance > log2_q
-            || d.term_2_variance > log2_q
-        {
+        if d.term_0_variance > log2_q || d.term_1_variance > log2_q || d.term_2_variance > log2_q {
             return Err(
                 "adaptive derivation: individual variance term exceeds log2(q) (paper Theorems 4/7 violated)",
             );

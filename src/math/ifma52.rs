@@ -89,7 +89,7 @@ pub fn mont_mul_split52(a: u64, b: u64, q: u64, q_inv_neg: u64) -> u64 {
     // extracts the 52-bit halves so the KAT locks the composition math
     // that the SIMD path must reproduce bit-identically.
     let p00 = (a_lo as u128) * (b_lo as u128); // 52b × 52b → 104b
-    let p00_lo = (p00 as u64) & MASK52;        // bits [51:0]
+    let p00_lo = (p00 as u64) & MASK52; // bits [51:0]
     let p00_hi = ((p00 >> 52) as u64) & MASK52; // bits [103:52]
 
     let p10 = (a_hi as u128) * (b_lo as u128); // 8b × 52b → 60b
@@ -117,18 +117,18 @@ pub fn mont_mul_split52(a: u64, b: u64, q: u64, q_inv_neg: u64) -> u64 {
     // Widths: cross-term sum is 52b + 53b = 53 bits max (one carry bit
     // into the next stripe). p10_hi + p01_hi is 9 bits; with p11_lo's
     // bottom 8 = 10 bits. p11_lo upper = 8 bits.
-    let cross_mid = p00_hi + p10_lo + p01_lo;      // up to 53 bits
+    let cross_mid = p00_hi + p10_lo + p01_lo; // up to 53 bits
     let cross_mid_lo52 = cross_mid & MASK52;
-    let cross_mid_carry = cross_mid >> 52;          // 0 or 1
+    let cross_mid_carry = cross_mid >> 52; // 0 or 1
 
     let upper_9 = p10_hi + p01_hi + cross_mid_carry; // up to 10 bits
-    let p11_low8 = p11_lo & 0xFF;                    // bits [111:104] contribution
-    let p11_high = p11_lo >> 8;                      // bits [127:112]
+    let p11_low8 = p11_lo & 0xFF; // bits [111:104] contribution
+    let p11_high = p11_lo >> 8; // bits [127:112]
 
-    let ab_lo: u64 = p00_lo | (cross_mid_lo52 << 52);      // bits [63:0]
+    let ab_lo: u64 = p00_lo | (cross_mid_lo52 << 52); // bits [63:0]
     let ab_hi: u64 = (cross_mid_lo52 >> 12)                // top 40b of cross_mid into bits [39:0] of ab_hi
         + ((upper_9 + p11_low8) << 40)                     // bits [111:72] → shifted to [47:8] of ab_hi
-        + (p11_high << 48);                                // bits [127:112] → [63:48] of ab_hi
+        + (p11_high << 48); // bits [127:112] → [63:48] of ab_hi
 
     // Standard Montgomery REDC: m = (ab & 2^64 - 1) · q_inv_neg mod 2^64.
     // Then t = (ab + m · q) >> 64, producing the reduced result in [0, 2q).
@@ -142,7 +142,11 @@ pub fn mont_mul_split52(a: u64, b: u64, q: u64, q_inv_neg: u64) -> u64 {
     let t = (ab_hi as u128) + (mq >> 64) + sum_carry;
     let t = t as u64;
 
-    if t >= q { t - q } else { t }
+    if t >= q {
+        t - q
+    } else {
+        t
+    }
 }
 
 /// Scalar IFMA52 emulation for composition correctness checking.
@@ -184,9 +188,7 @@ pub fn ifma52_product_lohi(a: u64, b: u64) -> (u64, u64) {
     let p11_high = p11_lo >> 8;
 
     let ab_lo: u64 = p00_lo | (cross_mid_lo52 << 52);
-    let ab_hi: u64 = (cross_mid_lo52 >> 12)
-        + ((upper_9 + p11_low8) << 40)
-        + (p11_high << 48);
+    let ab_hi: u64 = (cross_mid_lo52 >> 12) + ((upper_9 + p11_low8) << 40) + (p11_high << 48);
 
     (ab_lo, ab_hi)
 }
@@ -254,18 +256,12 @@ pub mod avx512_ifma {
         // cross_mid = p00_hi + p10_lo + p01_lo (up to 53 bits per lane)
         // cross_mid_lo52 = cross_mid & mask52
         // cross_mid_carry = cross_mid >> 52
-        let cross_mid = _mm512_add_epi64(
-            _mm512_add_epi64(p00_hi, p10_lo),
-            p01_lo,
-        );
+        let cross_mid = _mm512_add_epi64(_mm512_add_epi64(p00_hi, p10_lo), p01_lo);
         let cross_mid_lo52 = _mm512_and_si512(cross_mid, mask52);
         let cross_mid_carry = _mm512_srli_epi64::<52>(cross_mid);
 
         // upper_9 = p10_hi + p01_hi + cross_mid_carry (up to 10 bits per lane)
-        let upper_9 = _mm512_add_epi64(
-            _mm512_add_epi64(p10_hi, p01_hi),
-            cross_mid_carry,
-        );
+        let upper_9 = _mm512_add_epi64(_mm512_add_epi64(p10_hi, p01_hi), cross_mid_carry);
         let mask8 = _mm512_set1_epi64(0xFFi64);
         let p11_low8 = _mm512_and_si512(p11_lo, mask8);
         let p11_high = _mm512_srli_epi64::<8>(p11_lo);
@@ -282,10 +278,7 @@ pub mod avx512_ifma {
         let upper_plus_low = _mm512_add_epi64(upper_9, p11_low8);
         let upper_shifted = _mm512_slli_epi64::<40>(upper_plus_low);
         let p11_hi_shifted = _mm512_slli_epi64::<48>(p11_high);
-        let ab_hi = _mm512_add_epi64(
-            _mm512_add_epi64(cm_top, upper_shifted),
-            p11_hi_shifted,
-        );
+        let ab_hi = _mm512_add_epi64(_mm512_add_epi64(cm_top, upper_shifted), p11_hi_shifted);
 
         // Montgomery REDC (scalar per lane): m = ab_lo * q_inv_neg mod 2^64
         //                                    t = (ab + m * q) >> 64
@@ -311,17 +304,12 @@ pub mod avx512_ifma {
         let mq_p01_hi = _mm512_madd52hi_epu64(zero, m_lo, q_hi);
         let mq_p11_lo = _mm512_madd52lo_epu64(zero, m_hi, q_hi);
 
-        let mq_cross_mid = _mm512_add_epi64(
-            _mm512_add_epi64(mq_p00_hi, mq_p10_lo),
-            mq_p01_lo,
-        );
+        let mq_cross_mid = _mm512_add_epi64(_mm512_add_epi64(mq_p00_hi, mq_p10_lo), mq_p01_lo);
         let mq_cross_mid_lo52 = _mm512_and_si512(mq_cross_mid, mask52);
         let mq_cross_mid_carry = _mm512_srli_epi64::<52>(mq_cross_mid);
 
-        let mq_upper_9 = _mm512_add_epi64(
-            _mm512_add_epi64(mq_p10_hi, mq_p01_hi),
-            mq_cross_mid_carry,
-        );
+        let mq_upper_9 =
+            _mm512_add_epi64(_mm512_add_epi64(mq_p10_hi, mq_p01_hi), mq_cross_mid_carry);
         let mq_p11_low8 = _mm512_and_si512(mq_p11_lo, mask8);
         let mq_p11_high = _mm512_srli_epi64::<8>(mq_p11_lo);
 
@@ -346,10 +334,7 @@ pub mod avx512_ifma {
         let carry = _mm512_maskz_mov_epi64(carry_mask, one);
 
         // t = ab_hi + mq_hi + carry
-        let t = _mm512_add_epi64(
-            _mm512_add_epi64(ab_hi, mq_hi),
-            carry,
-        );
+        let t = _mm512_add_epi64(_mm512_add_epi64(ab_hi, mq_hi), carry);
 
         // Conditional subtract: if t >= q then t -= q
         let ge_mask = _mm512_cmpge_epu64_mask(t, q_vec);

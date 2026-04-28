@@ -412,9 +412,7 @@ impl Poly {
                 let a1 = self.coeffs[i + self.dim];
                 crt_compose_2(a0, a1, q0, q1, self.crt_q0_inv_mod_q1) % self.q
             }
-            _ => panic!(
-                "CRT with more than 2 moduli not supported"
-            ),
+            _ => panic!("CRT with more than 2 moduli not supported"),
         }
     }
 
@@ -433,9 +431,7 @@ impl Poly {
                 self.coeffs[i] = c0;
                 self.coeffs[i + self.dim] = c1;
             }
-            _ => panic!(
-                "CRT with more than 2 moduli not supported"
-            ),
+            _ => panic!("CRT with more than 2 moduli not supported"),
         }
     }
 

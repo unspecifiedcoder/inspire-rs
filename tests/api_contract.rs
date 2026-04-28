@@ -608,7 +608,8 @@ fn seeded_client_query_json_roundtrip() {
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let (_state, seeded_query) =
-        raven_inspire::pir::query_seeded(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler).unwrap();
+        raven_inspire::pir::query_seeded(&crs, 42, &encoded_db.config, &rlwe_sk, &mut sampler)
+            .unwrap();
 
     let json = serde_json::to_string(&seeded_query).unwrap();
     let recovered: SeededClientQuery = serde_json::from_str(&json).unwrap();
