@@ -25,7 +25,7 @@
 use super::error::{pir_err, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::inspiring::{packing_offline, PackParams, PackingKeyBody, PrecompInsPIR};
+use crate::inspiring::{PackParams, PackingKeyBody};
 use crate::ks::{generate_automorphism_ks_matrix, generate_packing_ks_matrix, KeySwitchingMatrix};
 use crate::lwe::LweSecretKey;
 use crate::math::{GaussianSampler, Poly};
@@ -71,9 +71,6 @@ pub struct ServerCrs {
     /// InspiRING packing parameters (canonical API)
     #[serde(skip)]
     pub inspiring_pack_params: Option<PackParams>,
-    /// InspiRING offline precomputation (a_hat, bold_t)
-    /// Computed from crs_a_vectors during setup
-    pub inspiring_precomp: Option<PrecompInsPIR>,
     /// InspiRING packing key body (w_all rotations - server side)
     #[serde(skip)]
     pub inspiring_packing_key: Option<PackingKeyBody>,
@@ -203,19 +200,6 @@ pub fn setup(
     // Generate offline packing keys from w_seed (server-side)
     let inspiring_packing_key = PackingKeyBody::generate(&inspiring_pack_params, inspiring_w_seed);
 
-    // Precompute offline phase using CRS a-vectors (only need num_columns a-vectors)
-    let a_polys: Vec<Poly> = crs_a_vectors
-        .iter()
-        .take(num_columns) // Only use first num_columns a-vectors
-        .map(|a| Poly::from_crt_coeffs(a.clone(), params.moduli()))
-        .collect();
-    let inspiring_precomp = packing_offline(
-        &inspiring_pack_params,
-        &inspiring_packing_key,
-        &a_polys,
-        &ctx,
-    );
-
     let shard_data = encode_database(database, entry_size, params, &shard_config)?;
 
     let crs = ServerCrs {
@@ -228,7 +212,6 @@ pub fn setup(
         packing_k_g: Some(packing_k_g),
         packing_k_h: Some(packing_k_h),
         inspiring_pack_params: Some(inspiring_pack_params),
-        inspiring_precomp: Some(inspiring_precomp),
         inspiring_packing_key: Some(inspiring_packing_key),
         inspiring_w_seed,
         inspiring_v_seed,

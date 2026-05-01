@@ -328,8 +328,14 @@ pub fn respond_one_packing(
 /// 3. Pack using InspiRING: y_all × bold_t + b_poly (precomputed offline)
 ///
 /// # Requirements
-/// - `crs.inspiring_precomp` must be set (computed during setup)
 /// - `crs.inspiring_packing_key` must be set (w_all rotations)
+///
+/// The per-query `packing_offline` is computed inline below from
+/// `crs.inspiring_w_seed` + the response column ciphertexts because
+/// the InspiRING a-vectors used by the offline phase are query-derived
+/// (a function of the RGSW input), not CRS-static. A setup-time
+/// global precomp would be the wrong shape and is intentionally NOT
+/// kept on `ServerCrs`.
 pub fn respond_inspiring(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
