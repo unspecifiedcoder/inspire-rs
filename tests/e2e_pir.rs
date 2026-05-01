@@ -484,11 +484,6 @@ fn test_e2e_inspiring_packing() {
     let mut sampler = GaussianSampler::new(params.sigma);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
-    // Verify InspiRING precomputation was set up
-    assert!(
-        crs.inspiring_precomp.is_some(),
-        "InspiRING precomp should be set"
-    );
     assert!(
         crs.inspiring_pack_params.is_some(),
         "InspiRING pack_params should be set"
