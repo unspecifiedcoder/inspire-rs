@@ -56,3 +56,16 @@ tiny-keccak = { version = "2.0", features = ["keccak"] }
 
 [dev-dependencies]
 proptest = "1.4"
+
+[features]
+default = []
+# Spiral-style server-side response mod-switching. Off by default for
+# backward compatibility; downstream consumers must opt in. See
+# `src/pir/mod_switch.rs` for the algorithm and noise-budget gate.
+mod-switch-response = []
+
+[[bench]]
+name = "spiral_mod_switch_bench"
+path = "benches/spiral_mod_switch_bench.rs"
+required-features = ["mod-switch-response"]
+harness = false

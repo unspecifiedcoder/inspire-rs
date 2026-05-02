@@ -46,6 +46,8 @@ mod encode_db;
 mod error;
 mod eval_poly;
 mod extract;
+#[cfg(feature = "mod-switch-response")]
+pub mod mod_switch;
 mod query;
 mod respond;
 mod session;
