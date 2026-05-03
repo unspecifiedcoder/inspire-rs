@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 /// - Automorphism tables for O(n) NTT-domain automorphisms
 /// - Shared NttContext to avoid recreation
 /// - mod_inv as polynomial for NTT-domain scalar multiply
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackParams {
     /// Number of items to pack (γ)
     pub num_to_pack: usize,
@@ -452,7 +452,7 @@ impl PrecompInsPIR {
 ///
 /// **Performance**: Stores w_all in NTT form for O(n) multiply-accumulate
 /// in the backward recursion phase.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OfflinePackingKeys {
     /// Seed for generating w_mask (32 bytes, shared in CRS)
     pub w_seed: [u8; 32],
