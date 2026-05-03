@@ -462,7 +462,7 @@ pub fn respond_inspiring(
 /// `num_columns` is derived from the first shard's polynomial
 /// count and is stable across all queries against one CRS (shard
 /// shape is set at setup time).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServerInspiringCache {
     pack_params: crate::inspiring::PackParams,
     offline_keys: crate::inspiring::OfflinePackingKeys,
@@ -488,6 +488,31 @@ impl ServerInspiringCache {
             pack_params,
             offline_keys,
         })
+    }
+
+    /// Reconstruct the cache from previously serialised parts without
+    /// re-running the offline packing phase.
+    ///
+    /// `pack_params` and `offline_keys` are pure functions of
+    /// `(crs.params, num_columns, crs.inspiring_w_seed)`; if a caller
+    /// has them on hand from a disk-backed cache, they may rebuild the
+    /// `ServerInspiringCache` directly with this constructor instead of
+    /// paying the `PackParams::new` automorph-table search and the
+    /// `OfflinePackingKeys::generate` rotation work that
+    /// [`ServerInspiringCache::new`] performs.
+    ///
+    /// The caller is responsible for verifying that the supplied parts
+    /// are consistent with the current CRS / encoded database (e.g. via
+    /// a hashed cell-shape fingerprint at the disk-cache layer); this
+    /// constructor performs no validation.
+    pub fn from_parts(
+        pack_params: crate::inspiring::PackParams,
+        offline_keys: crate::inspiring::OfflinePackingKeys,
+    ) -> Self {
+        Self {
+            pack_params,
+            offline_keys,
+        }
     }
 
     /// Borrow the cached pack params for callers that want them
