@@ -277,6 +277,7 @@ impl NttContext {
     /// Crate-internal accessor used by `Poly::mul_acc_ntt_domain` to
     /// dispatch into the AVX-512-IFMA Solinas multiply-accumulate
     /// kernel when the `simd-packing-offline` feature is enabled.
+    #[cfg(all(feature = "simd-packing-offline", target_arch = "x86_64"))]
     #[inline]
     pub(crate) fn solinas_q_inv_neg(&self) -> Option<u64> {
         if self.is_solinas_default_q() {
