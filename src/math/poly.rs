@@ -296,6 +296,11 @@ impl Poly {
     }
 
     /// Generate a uniformly random polynomial with CRT moduli.
+    ///
+    /// Uses `rand::thread_rng()` as the RNG source. Callers that need
+    /// reproducibility (tests) or want to control the entropy source
+    /// (e.g. WASM contexts that pre-seed a deterministic RNG) should
+    /// use [`Self::random_with_rng_moduli`] with their own RNG.
     pub fn random_moduli(dim: usize, moduli: &[u64]) -> Self {
         let mut rng = rand::thread_rng();
         Self::random_with_rng_moduli(dim, moduli, &mut rng)
@@ -1058,6 +1063,39 @@ mod tests {
         let p = Poly::zero_default(256);
         assert!(p.is_zero());
         assert_eq!(p.dimension(), 256);
+    }
+
+    /// H1: `Poly::random_with_rng_moduli` must produce reproducible
+    /// coefficients given a seeded `ChaCha20Rng`. Locks down the
+    /// RNG-injection path (used by WASM clients and deterministic
+    /// test fixtures) and asserts coefficient reproducibility.
+    #[test]
+    fn poly_random_with_rng_moduli_is_deterministic_under_seeded_rng() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        let dim = 64usize;
+        let moduli = &[DEFAULT_Q];
+
+        let mut rng_a = ChaCha20Rng::seed_from_u64(0xCAFE_F00D_DEAD_BEEF);
+        let p_a = Poly::random_with_rng_moduli(dim, moduli, &mut rng_a);
+
+        let mut rng_b = ChaCha20Rng::seed_from_u64(0xCAFE_F00D_DEAD_BEEF);
+        let p_b = Poly::random_with_rng_moduli(dim, moduli, &mut rng_b);
+
+        assert_eq!(
+            p_a.coeffs(),
+            p_b.coeffs(),
+            "same seed must produce identical coefficients"
+        );
+
+        let mut rng_diff = ChaCha20Rng::seed_from_u64(0x1234_5678_9ABC_DEF0);
+        let p_diff = Poly::random_with_rng_moduli(dim, moduli, &mut rng_diff);
+        assert_ne!(
+            p_a.coeffs(),
+            p_diff.coeffs(),
+            "different seed must (with overwhelming probability) produce different coefficients"
+        );
     }
 
     #[test]

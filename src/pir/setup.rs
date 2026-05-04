@@ -136,6 +136,23 @@ pub fn setup(
     entry_size: usize,
     sampler: &mut GaussianSampler,
 ) -> Result<(ServerCrs, EncodedDatabase, RlweSecretKey)> {
+    let mut rng = rand::thread_rng();
+    setup_with_rng(params, database, entry_size, sampler, &mut rng)
+}
+
+/// `setup` with explicit caller-provided RNG.
+///
+/// Used by tests that need reproducible CRS bytes (seeded `ChaCha20Rng`)
+/// and by WASM clients that pre-seed a deterministic RNG. Native
+/// callers can keep using [`setup`], which delegates here with
+/// `rand::thread_rng()`.
+pub fn setup_with_rng<R: rand::RngCore + rand::CryptoRng>(
+    params: &InspireParams,
+    database: &[u8],
+    entry_size: usize,
+    sampler: &mut GaussianSampler,
+    rng: &mut R,
+) -> Result<(ServerCrs, EncodedDatabase, RlweSecretKey)> {
     params.validate().map_err(|e| pir_err!("{}", e))?;
 
     let d = params.ring_dim;
@@ -171,7 +188,7 @@ pub fn setup(
 
     let crs_a_vectors: Vec<Vec<u64>> = (0..d)
         .map(|_| {
-            let poly = Poly::random_moduli(d, params.moduli());
+            let poly = Poly::random_with_rng_moduli(d, params.moduli(), rng);
             poly.coeffs().to_vec()
         })
         .collect();
@@ -193,9 +210,8 @@ pub fn setup(
     // Generate random seeds for InspiRING (shared between client and server)
     let mut inspiring_w_seed = [0u8; 32];
     let mut inspiring_v_seed = [0u8; 32];
-    use rand::RngCore;
-    rand::thread_rng().fill_bytes(&mut inspiring_w_seed);
-    rand::thread_rng().fill_bytes(&mut inspiring_v_seed);
+    rng.fill_bytes(&mut inspiring_w_seed);
+    rng.fill_bytes(&mut inspiring_v_seed);
 
     // Generate offline packing keys from w_seed (server-side)
     let inspiring_packing_key = PackingKeyBody::generate(&inspiring_pack_params, inspiring_w_seed);
@@ -304,6 +320,42 @@ mod tests {
         assert_eq!(sk.ring_dim(), params.ring_dim);
         assert!(!encoded_db.shards.is_empty());
         assert_eq!(crs.params.ring_dim, params.ring_dim);
+    }
+
+    /// H1: `setup_with_rng` must accept a caller-provided `CryptoRng`
+    /// and produce a CRS whose RNG-derived bytes are reproducible across
+    /// runs given the same seed. Locks down the explicit-RNG injection
+    /// path used by WASM clients and deterministic test fixtures.
+    #[test]
+    fn setup_with_rng_is_deterministic_under_seeded_rng() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        let params = test_params();
+        let entry_size = 32;
+        let num_entries = params.ring_dim;
+        let database: Vec<u8> = (0..(num_entries * entry_size))
+            .map(|i| (i % 256) as u8)
+            .collect();
+
+        let run_once = |seed: u64| -> ([u8; 32], [u8; 32]) {
+            let mut sampler = GaussianSampler::new(params.sigma);
+            let mut rng = ChaCha20Rng::seed_from_u64(seed);
+            let (crs, _, _) =
+                setup_with_rng(&params, &database, entry_size, &mut sampler, &mut rng).unwrap();
+            (crs.inspiring_w_seed, crs.inspiring_v_seed)
+        };
+
+        let (w_a, v_a) = run_once(0xDEAD_BEEF_CAFE_F00D);
+        let (w_b, v_b) = run_once(0xDEAD_BEEF_CAFE_F00D);
+        assert_eq!(w_a, w_b, "same RNG seed must produce same w_seed");
+        assert_eq!(v_a, v_b, "same RNG seed must produce same v_seed");
+
+        let (w_diff, _) = run_once(0x1234_5678_9ABC_DEF0);
+        assert_ne!(
+            w_a, w_diff,
+            "different RNG seed must produce different w_seed (sanity)"
+        );
     }
 
     #[test]

@@ -396,17 +396,19 @@ impl InspireParams {
 
         // Documentation-only note (no runtime rejection):
         //
-        // `pir::extract::extract_packed` computes `mod_inverse(d, p)`
-        // and falls back to `.unwrap_or(1)` when `gcd(d, p) != 1`.
+        // `pir::extract::extract_packed` computes `mod_inverse(d, p)`.
         // Under p=65537 (Fermat F4, shipping config) + d=2048, gcd
         // is 1 and the inverse exists. Under legacy test params
-        // (p=65536, Google's default) gcd is 256 and the fallback
-        // silently proceeds with the wrong d_inv, producing
-        // semantically-wrong plaintext at the extracted slot.
+        // (p=65536, Google's default) gcd is 256 and the inverse
+        // does not exist, so `extract_packed` returns the typed
+        // `ExtractError::DegreeNotInvertible` error rather than
+        // silently producing garbage plaintext. (Pre-fork code used
+        // `.unwrap_or(1)` here; that fallback was removed.)
         //
-        // A strict rejection was removed because it broke 15
-        // pre-existing unit tests using the p=65536 fixture. The
-        // strict version is available for callers who want to opt in:
+        // A strict rejection was removed from `validate()` because
+        // it broke 15 pre-existing unit tests using the p=65536
+        // fixture. The strict version is available for callers who
+        // want to opt in:
         //   InspireParams::validate_strict_tree_packed()
         // The shipping TwoPacking + InspiRING path does NOT use
         // extract_packed's d_inv branch, so the invariant is not

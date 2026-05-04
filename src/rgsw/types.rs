@@ -4,7 +4,6 @@
 
 use crate::math::{GaussianSampler, NttContext, Poly};
 use crate::rlwe::{RlweCiphertext, RlweSecretKey, SeededRlweCiphertext};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 /// Samples a polynomial with coefficients from discrete Gaussian (CRT-aware).
@@ -237,7 +236,10 @@ pub struct SeededRgswCiphertext {
 }
 
 impl SeededRgswCiphertext {
-    /// Encrypt a message polynomial, storing seeds instead of full `a` polynomials
+    /// Encrypt a message polynomial, storing seeds instead of full `a`
+    /// polynomials. Uses `rand::thread_rng()` as the seed source. Tests
+    /// or WASM clients that need reproducibility / deterministic seeds
+    /// should call [`Self::encrypt_with_rng`] instead.
     pub fn encrypt(
         sk: &RlweSecretKey,
         message: &Poly,
@@ -245,13 +247,38 @@ impl SeededRgswCiphertext {
         sampler: &mut GaussianSampler,
         ctx: &NttContext,
     ) -> Self {
+        let mut rng = rand::thread_rng();
+        Self::encrypt_with_rng(sk, message, gadget, sampler, ctx, &mut rng)
+    }
+
+    /// `encrypt` with explicit caller-provided RNG.
+    ///
+    /// Native callers can keep using [`Self::encrypt`]. WASM clients
+    /// and tests that want reproducibility should plumb a seeded
+    /// `ChaCha20Rng` here.
+    ///
+    /// # Security note
+    ///
+    /// The RNG is used only to draw the public 32-byte `a`-polynomial
+    /// seeds; the message-secret randomness lives in the `sampler`'s
+    /// Gaussian errors, so a low-entropy `rng` does not weaken IND-CPA
+    /// of the resulting RGSW ciphertext as long as the per-row seeds
+    /// remain distinct (which a `CryptoRng` guarantees). Using a
+    /// deterministic `ChaCha20Rng` for tests is safe.
+    pub fn encrypt_with_rng<R: rand::RngCore + rand::CryptoRng>(
+        sk: &RlweSecretKey,
+        message: &Poly,
+        gadget: &GadgetVector,
+        sampler: &mut GaussianSampler,
+        ctx: &NttContext,
+        rng: &mut R,
+    ) -> Self {
         let d = sk.ring_dim();
         let moduli = sk.poly.moduli();
         let ell = gadget.len;
 
         let mut rows = Vec::with_capacity(2 * ell);
         let powers = gadget.powers();
-        let mut rng = rand::thread_rng();
         assert!(
             powers.len() >= ell,
             "gadget powers must have at least {} entries, got {}",
@@ -422,5 +449,49 @@ mod tests {
 
         // RGSW(0) should have all rows as valid RLWE ciphertexts
         assert_eq!(rgsw.rows.len(), 6); // 2 * 3
+    }
+
+    /// H1: `SeededRgswCiphertext::encrypt_with_rng` must be reproducible
+    /// when both the public-seed RNG and the Gaussian sampler are seeded
+    /// deterministically. This locks down the RNG-injection path so
+    /// WASM clients (and tests) can produce identical seeds across runs.
+    #[test]
+    fn seeded_rgsw_encrypt_with_rng_is_deterministic_when_seeds_match() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        let params = test_params();
+        let ctx = make_ctx(&params);
+        let gadget = GadgetVector::new(params.gadget_base, params.gadget_len, params.q);
+
+        let run_once = |sampler_seed: u64, rng_seed: u64| -> Vec<[u8; 32]> {
+            // Both the GaussianSampler and the public-seed RNG must be
+            // seeded for full byte-level reproducibility (the sampler's
+            // errors influence the `b_adjusted` polynomial, but here we
+            // assert reproducibility of the public seeds, which depend
+            // ONLY on the injected RNG).
+            let mut sampler =
+                GaussianSampler::with_seed(params.sigma, sampler_seed);
+            let sk = RlweSecretKey::generate(&params, &mut sampler);
+            let msg = Poly::constant_moduli(1u64, params.ring_dim, params.moduli());
+            let mut rng = ChaCha20Rng::seed_from_u64(rng_seed);
+            let ct = SeededRgswCiphertext::encrypt_with_rng(
+                &sk, &msg, &gadget, &mut sampler, &ctx, &mut rng,
+            );
+            ct.rows.iter().map(|r| r.seed).collect()
+        };
+
+        let seeds_a = run_once(0xAAAA_BBBB_CCCC_DDDD, 0xDEAD_BEEF_CAFE_F00D);
+        let seeds_b = run_once(0xAAAA_BBBB_CCCC_DDDD, 0xDEAD_BEEF_CAFE_F00D);
+        assert_eq!(
+            seeds_a, seeds_b,
+            "matching sampler+RNG seeds must yield identical RGSW row seeds"
+        );
+
+        let seeds_diff = run_once(0xAAAA_BBBB_CCCC_DDDD, 0x1234_5678_9ABC_DEF0);
+        assert_ne!(
+            seeds_a, seeds_diff,
+            "different RNG seed must yield different RGSW row seeds"
+        );
     }
 }

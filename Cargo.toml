@@ -54,6 +54,14 @@ hex = "0.4"
 # Bucket index (for setup)
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 
+# WASM browser support for `rand::thread_rng()` / `OsRng`. On
+# wasm32-unknown-unknown the `getrandom` crate (transitively pulled by
+# `rand` / `rand_chacha`) refuses to compile without an explicit backend;
+# the `js` feature wires it to the browser's `crypto.getRandomValues`.
+# Native targets are unaffected.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
 [features]
 default = []
 # Enable AVX-512-IFMA52 multiply-accumulate dispatch in the
