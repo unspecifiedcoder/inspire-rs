@@ -1,3 +1,5 @@
+#![cfg(target_arch = "x86_64")]
+
 //! Byte-identity KAT for the AVX-512-IFMA52 multiply-accumulate
 //! dispatch in `Poly::mul_acc_ntt_domain`.
 //!
