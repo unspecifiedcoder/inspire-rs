@@ -38,6 +38,25 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
+/// Cached AVX-512-IFMA52 CPUID detection for the Solinas multiply-
+/// accumulate dispatch in [`Poly::mul_acc_ntt_domain`]. The
+/// `is_x86_feature_detected!` macro reads CPUID through std's lazy
+/// feature cache, but invoking it on every coefficient batch in a
+/// hot inner loop adds a (small) per-batch overhead. A
+/// `OnceLock<bool>` caches the verdict at first use.
+///
+/// Disabled (returns `false`) on non-x86_64 targets; the scalar
+/// fallback path is the only code reachable from `mul_acc_ntt_domain`
+/// under those `cfg`s.
+#[cfg(all(feature = "simd-packing-offline", target_arch = "x86_64"))]
+fn has_avx512_ifma_cached() -> bool {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512ifma")
+    })
+}
+
 /// Polynomial in R_q = Z_q\[X\]/(X^d + 1).
 ///
 /// Represents a polynomial with coefficients in Z_q, reduced modulo X^d + 1.
@@ -657,7 +676,16 @@ impl Poly {
 
     /// In-place multiply-accumulate in NTT domain: self += a * b
     ///
-    /// **Performance**: Single pass multiply-add without intermediate allocation
+    /// **Performance**: Single pass multiply-add without intermediate allocation.
+    ///
+    /// When the `simd-packing-offline` feature is enabled and the host
+    /// CPU exposes AVX-512-IFMA52 (Intel Ice Lake / Tiger Lake +, AMD
+    /// Zen 5), the inner loop dispatches to an 8-wide
+    /// Solinas-Montgomery multiply-accumulate kernel for the single-
+    /// prime DEFAULT_Q configuration. The dispatch is byte-identity
+    /// preserving (covered by `tests/simd_packing_offline_kat.rs`).
+    /// Without the feature flag, or on non-x86_64 targets, or on hosts
+    /// lacking AVX-512-IFMA, the scalar implementation runs unchanged.
     pub fn mul_acc_ntt_domain(&mut self, a: &Self, b: &Self, ctx: &NttContext) {
         assert!(
             self.is_ntt && a.is_ntt && b.is_ntt,
@@ -665,6 +693,43 @@ impl Poly {
         );
         assert_eq!(self.moduli, a.moduli, "Moduli must match");
         assert_eq!(self.moduli, b.moduli, "Moduli must match");
+
+        // SIMD fast path: single-prime DEFAULT_Q + Solinas reduction +
+        // AVX-512-IFMA52 host feature. Falls through to the scalar
+        // loop for any condition that fails (multi-prime CRT context,
+        // non-DEFAULT_Q modulus, non-x86_64 build, host without IFMA52,
+        // or buffer length not a multiple of 8).
+        #[cfg(all(feature = "simd-packing-offline", target_arch = "x86_64"))]
+        {
+            if let Some(q_inv_neg) = ctx.solinas_q_inv_neg() {
+                if self.moduli.len() == 1 && self.dim % 8 == 0 && has_avx512_ifma_cached() {
+                    // SAFETY:
+                    // - has_avx512_ifma_cached() returned true: AVX-512F
+                    //   + AVX-512-IFMA are enabled on the host CPU,
+                    //   satisfying the kernel's `target_feature` invariant.
+                    // - solinas_q_inv_neg() returned Some, so the moduli
+                    //   slice is `[DEFAULT_Q]` (single CRT limb).
+                    // - dim % 8 == 0, so the per-modulus stripe length
+                    //   `self.dim` is a multiple of 8 lanes.
+                    // - acc, a, b are &mut self.coeffs / &a.coeffs /
+                    //   &b.coeffs of identical length `self.dim` (single
+                    //   CRT limb); Rust's borrow checker prevents
+                    //   aliasing between `&mut self` and `&a` / `&b`.
+                    // - All inputs are in Montgomery form within
+                    //   `[0, DEFAULT_Q)` by the NTT-domain precondition.
+                    unsafe {
+                        super::solinas_redc::avx512_ifma::solinas_mont_mul_acc_x8(
+                            self.coeffs.as_mut_ptr(),
+                            a.coeffs.as_ptr(),
+                            b.coeffs.as_ptr(),
+                            self.dim,
+                            q_inv_neg,
+                        );
+                    }
+                    return;
+                }
+            }
+        }
 
         for (m, &modulus) in self.moduli.iter().enumerate() {
             let start = m * self.dim;

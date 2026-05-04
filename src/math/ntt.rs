@@ -272,6 +272,20 @@ impl NttContext {
         self.moduli.len() == 1 && self.moduli[0] == super::mod_q::DEFAULT_Q
     }
 
+    /// Returns `Some(q_inv_neg)` for the single Solinas DEFAULT_Q limb
+    /// when the context is configured for that path, `None` otherwise.
+    /// Crate-internal accessor used by `Poly::mul_acc_ntt_domain` to
+    /// dispatch into the AVX-512-IFMA Solinas multiply-accumulate
+    /// kernel when the `simd-packing-offline` feature is enabled.
+    #[inline]
+    pub(crate) fn solinas_q_inv_neg(&self) -> Option<u64> {
+        if self.is_solinas_default_q() {
+            Some(self.q_inv_neg[0])
+        } else {
+            None
+        }
+    }
+
     /// Performs forward NTT in-place using Cooley-Tukey decimation-in-time.
     ///
     /// Converts polynomial coefficients to NTT representation (evaluations

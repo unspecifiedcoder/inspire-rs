@@ -304,6 +304,67 @@ pub mod avx512_ifma {
             _mm512_storeu_si512(result[i..].as_mut_ptr().cast(), rv);
         }
     }
+
+    /// 8-wide Solinas-Montgomery multiply-accumulate at DEFAULT_Q.
+    ///
+    /// Computes `acc[i] = (acc[i] + a[i] * b[i] * R^{-1}) mod q` for
+    /// 8-lane batches across the input slices. R = 2^64. All inputs
+    /// must be in Montgomery form within `[0, q)`; the accumulator
+    /// stays in Montgomery form within `[0, q)` after each batch.
+    ///
+    /// Designed as a drop-in replacement for the inner loop of
+    /// [`super::super::poly::Poly::mul_acc_ntt_domain`] under the
+    /// `simd-packing-offline` feature gate, gated by runtime CPUID.
+    ///
+    /// # Reduction invariant
+    ///
+    /// `solinas_mont_mul_x8` returns each lane in `[0, q)`. With
+    /// `q = DEFAULT_Q < 2^60`, the lane-wise sum `acc + product` is
+    /// `< 2q < 2^61`, so a single conditional-subtract suffices to
+    /// bring the result back to `[0, q)`. Branch-free via
+    /// `_mm512_mask_sub_epi64` on the `>=` mask.
+    ///
+    /// # Safety
+    ///
+    /// Caller MUST ensure:
+    /// - `is_x86_feature_detected!("avx512ifma")` is true on the host.
+    /// - `acc`, `a`, `b` all point to a contiguous slice of `len` u64.
+    /// - `len` is a multiple of 8.
+    /// - The three slices do not alias (standard `&mut` rules).
+    /// - All inputs are in Montgomery form within `[0, DEFAULT_Q)`.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub unsafe fn solinas_mont_mul_acc_x8(
+        acc: *mut u64,
+        a: *const u64,
+        b: *const u64,
+        len: usize,
+        q_inv_neg: u64,
+    ) {
+        debug_assert_eq!(len % 8, 0, "len must be a multiple of 8");
+
+        let q_vec = _mm512_set1_epi64(DEFAULT_Q as i64);
+        let q_inv_neg_vec = _mm512_set1_epi64(q_inv_neg as i64);
+
+        let mut i = 0usize;
+        while i < len {
+            let av = _mm512_loadu_si512(a.add(i).cast());
+            let bv = _mm512_loadu_si512(b.add(i).cast());
+            let accv = _mm512_loadu_si512(acc.add(i).cast());
+
+            let prod = solinas_mont_mul_x8(av, bv, q_inv_neg_vec);
+
+            // sum = acc + prod, each lane in [0, 2q) since both
+            // operands are < q < 2^60 < 2^63 (no u64 overflow).
+            let sum = _mm512_add_epi64(accv, prod);
+
+            // Conditional subtract via mask: if sum >= q then sum -= q
+            let ge_mask = _mm512_cmpge_epu64_mask(sum, q_vec);
+            let reduced = _mm512_mask_sub_epi64(sum, ge_mask, sum, q_vec);
+
+            _mm512_storeu_si512(acc.add(i).cast(), reduced);
+            i += 8;
+        }
+    }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -313,6 +374,17 @@ pub mod avx512_ifma {
         a: &[u64],
         b: &[u64],
         result: &mut [u64],
+        q_inv_neg: u64,
+    ) {
+        panic!("AVX-512-IFMA not available on this target architecture");
+    }
+
+    #[allow(unused_variables)]
+    pub unsafe fn solinas_mont_mul_acc_x8(
+        acc: *mut u64,
+        a: *const u64,
+        b: *const u64,
+        len: usize,
         q_inv_neg: u64,
     ) {
         panic!("AVX-512-IFMA not available on this target architecture");

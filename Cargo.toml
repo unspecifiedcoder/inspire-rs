@@ -54,15 +54,20 @@ hex = "0.4"
 # Bucket index (for setup)
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 
-[dev-dependencies]
-proptest = "1.4"
-
 [features]
 default = []
+# Enable AVX-512-IFMA52 multiply-accumulate dispatch in the
+# packing-offline hot kernel (`Poly::mul_acc_ntt_domain`). Default OFF;
+# safe to enable on any target — runtime CPUID gates the dispatch and
+# the scalar path remains for non-x86_64 / pre-IFMA52 hosts.
+simd-packing-offline = []
 # Spiral-style server-side response mod-switching. Off by default for
 # backward compatibility; downstream consumers must opt in. See
 # `src/pir/mod_switch.rs` for the algorithm and noise-budget gate.
 mod-switch-response = []
+
+[dev-dependencies]
+proptest = "1.4"
 
 [[bench]]
 name = "spiral_mod_switch_bench"
