@@ -905,8 +905,8 @@ pub const DEFAULT_Q_2CRT_30BIT: [u64; 2] = [1_073_479_681, 1_073_692_673];
 /// ```
 /// use raven_inspire::params::ShardConfig;
 ///
-/// // Configure for Ethereum state database
-/// let config = ShardConfig::ethereum_state(2_417_514_276);
+/// // Configure a flat fixed-width database (e.g. 32-byte state entries).
+/// let config = ShardConfig::for_flat_db(32, 2_417_514_276);
 ///
 /// // Each shard holds ~33M entries (1GB / 32 bytes)
 /// assert_eq!(config.entries_per_shard(), 1 << 25);
@@ -924,46 +924,40 @@ pub struct ShardConfig {
 
     /// Size of each database entry in bytes.
     ///
-    /// Default: 32 bytes for Ethereum state (account data or storage slots).
+    /// Common preset: 32 bytes (e.g. fixed-width state entries).
     pub entry_size_bytes: usize,
 
     /// Total number of entries in the database.
     ///
-    /// For Ethereum mainnet, this is approximately 2.4 billion entries.
+    /// Example: a corpus of about 2.4 billion entries.
     pub total_entries: u64,
 }
 
 impl ShardConfig {
-    /// Creates a shard configuration for Ethereum state database.
+    /// Creates a shard configuration for a flat, fixed-width database using a
+    /// 1 GB shard preset.
     ///
-    /// Uses standard Ethereum parameters: 1 GB shards with 32-byte entries.
-    /// This configuration is optimized for querying account balances and
-    /// storage slots from the Ethereum state trie.
+    /// Set the public fields directly for full control. As one example,
+    /// private Ethereum account/storage state uses 32-byte entries.
     ///
     /// # Arguments
     ///
+    /// * `entry_size_bytes` - Size of each fixed-width entry in bytes
     /// * `total_entries` - Total number of entries in the database
-    ///
-    /// # Returns
-    ///
-    /// A new `ShardConfig` with:
-    /// - `shard_size_bytes`: 1 GB (1 << 30)
-    /// - `entry_size_bytes`: 32 bytes
-    /// - `total_entries`: as specified
     ///
     /// # Example
     ///
     /// ```
     /// use raven_inspire::params::ShardConfig;
     ///
-    /// // Ethereum mainnet has ~2.4 billion entries
-    /// let config = ShardConfig::ethereum_state(2_417_514_276);
+    /// // 32-byte entries, about 2.4 billion of them
+    /// let config = ShardConfig::for_flat_db(32, 2_417_514_276);
     /// assert_eq!(config.entry_size_bytes, 32);
     /// ```
-    pub fn ethereum_state(total_entries: u64) -> Self {
+    pub fn for_flat_db(entry_size_bytes: usize, total_entries: u64) -> Self {
         Self {
-            shard_size_bytes: 1 << 30, // 1 GB
-            entry_size_bytes: 32,
+            shard_size_bytes: 1 << 30,
+            entry_size_bytes,
             total_entries,
         }
     }
@@ -979,7 +973,7 @@ impl ShardConfig {
     /// ```
     /// use raven_inspire::params::ShardConfig;
     ///
-    /// let config = ShardConfig::ethereum_state(1_000_000);
+    /// let config = ShardConfig::for_flat_db(32, 1_000_000);
     /// // 1 GB / 32 bytes = 33,554,432 entries per shard
     /// assert_eq!(config.entries_per_shard(), 1 << 25);
     /// ```
@@ -1000,8 +994,8 @@ impl ShardConfig {
     /// ```
     /// use raven_inspire::params::ShardConfig;
     ///
-    /// // Ethereum mainnet needs ~72 shards
-    /// let config = ShardConfig::ethereum_state(2_417_514_276);
+    /// // about 2.4 billion 32-byte entries need ~72 one-GB shards
+    /// let config = ShardConfig::for_flat_db(32, 2_417_514_276);
     /// let num_shards = config.num_shards();
     /// assert!(num_shards > 70 && num_shards < 80);
     /// ```
@@ -1029,7 +1023,7 @@ impl ShardConfig {
     /// ```
     /// use raven_inspire::params::ShardConfig;
     ///
-    /// let config = ShardConfig::ethereum_state(2_417_514_276);
+    /// let config = ShardConfig::for_flat_db(32, 2_417_514_276);
     /// let (shard_id, local_idx) = config.index_to_shard(100_000_000);
     ///
     /// // Verify roundtrip
@@ -1094,7 +1088,7 @@ impl ShardConfig {
     /// ```
     /// use raven_inspire::params::ShardConfig;
     ///
-    /// let config = ShardConfig::ethereum_state(2_417_514_276);
+    /// let config = ShardConfig::for_flat_db(32, 2_417_514_276);
     ///
     /// // Entry 10 in shard 2
     /// let global_idx = config.shard_to_index(2, 10);
@@ -1126,8 +1120,8 @@ mod tests {
 
     #[test]
     fn test_shard_config() {
-        // Ethereum mainnet: ~2.4 billion entries
-        let config = ShardConfig::ethereum_state(2_417_514_276);
+        // about 2.4 billion 32-byte entries
+        let config = ShardConfig::for_flat_db(32, 2_417_514_276);
 
         // Each shard: 1GB / 32B = ~33M entries
         let entries_per_shard = config.entries_per_shard();
@@ -1140,7 +1134,7 @@ mod tests {
 
     #[test]
     fn test_index_conversion() {
-        let config = ShardConfig::ethereum_state(2_417_514_276);
+        let config = ShardConfig::for_flat_db(32, 2_417_514_276);
 
         // Test roundtrip
         let global_idx = 100_000_000u64;
