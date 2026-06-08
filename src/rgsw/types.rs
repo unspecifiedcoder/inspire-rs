@@ -470,13 +470,17 @@ mod tests {
             // errors influence the `b_adjusted` polynomial, but here we
             // assert reproducibility of the public seeds, which depend
             // ONLY on the injected RNG).
-            let mut sampler =
-                GaussianSampler::with_seed(params.sigma, sampler_seed);
+            let mut sampler = GaussianSampler::with_seed(params.sigma, sampler_seed);
             let sk = RlweSecretKey::generate(&params, &mut sampler);
             let msg = Poly::constant_moduli(1u64, params.ring_dim, params.moduli());
             let mut rng = ChaCha20Rng::seed_from_u64(rng_seed);
             let ct = SeededRgswCiphertext::encrypt_with_rng(
-                &sk, &msg, &gadget, &mut sampler, &ctx, &mut rng,
+                &sk,
+                &msg,
+                &gadget,
+                &mut sampler,
+                &ctx,
+                &mut rng,
             );
             ct.rows.iter().map(|r| r.seed).collect()
         };

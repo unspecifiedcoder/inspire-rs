@@ -149,10 +149,8 @@ fn extract_packed(
     // substituted 1, returning d-scaled garbage to the caller; we now
     // surface the parameter misuse as a typed error instead. Callers
     // can validate up front via `InspireParams::validate_strict_tree_packed`.
-    let d_inv = mod_inverse(d as u64, p).ok_or(ExtractError::DegreeNotInvertible {
-        d: d as u64,
-        p,
-    })?;
+    let d_inv =
+        mod_inverse(d as u64, p).ok_or(ExtractError::DegreeNotInvertible { d: d as u64, p })?;
 
     let mut column_values = Vec::with_capacity(num_columns);
     for col in 0..num_columns {
@@ -486,8 +484,14 @@ mod tests {
             msg.contains("d^{-1} mod p does not exist"),
             "expected DegreeNotInvertible message, got: {msg}",
         );
-        assert!(msg.contains("d=256"), "expected d=256 in message, got: {msg}");
-        assert!(msg.contains("p=65536"), "expected p=65536 in message, got: {msg}");
+        assert!(
+            msg.contains("d=256"),
+            "expected d=256 in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("p=65536"),
+            "expected p=65536 in message, got: {msg}"
+        );
     }
 
     /// C9 (typed error): with `gcd(d, p) == 1` the modular inverse exists
