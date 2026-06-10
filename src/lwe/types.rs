@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 /// let sk = LweSecretKey::generate(256, DEFAULT_Q, &mut sampler);
 /// assert_eq!(sk.dim, 256);
 /// ```
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct LweSecretKey {
     /// Secret key coefficients in Z_q.
     pub coeffs: Vec<u64>,
@@ -32,6 +32,15 @@ pub struct LweSecretKey {
     pub dim: usize,
     /// Ciphertext modulus.
     pub q: u64,
+}
+
+impl std::fmt::Debug for LweSecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LweSecretKey")
+            .field("dim", &self.dim)
+            .field("q", &self.q)
+            .finish_non_exhaustive()
+    }
 }
 
 /// LWE ciphertext: (a, b) where b = -<a, s> + e + Δ·m.

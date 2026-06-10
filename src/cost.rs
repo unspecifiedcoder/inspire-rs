@@ -261,18 +261,18 @@ impl CostEstimator {
         let ell = self.params.gadget_len as u64;
         let log_d = if d == 0 { 0 } else { d.ilog2() as u64 };
 
-        // KS matrix generation: K_g and K_h each require l RLWE encryptions
+        // Base key-switching matrices: each is l RLWE encryptions
         let ks_matrix_rows = ell;
-        let num_ks_matrices = 2u64; // K_g, K_h
+        let num_ks_matrices = 2u64; // the scheme's two base key-switching matrices
 
         // Galois keys: log_d KS matrices for tree packing automorphisms
         let galois_key_rows = log_d.saturating_mul(ell);
 
-        // Packing KS matrices: 2 more for InspiRING (packing_k_g, packing_k_h)
+        // Packing key-switching matrices: 2 more for the packing variant
         let packing_ks_rows = 2u64.saturating_mul(ell);
 
         // Setup keys are variant-specific. NoPacking does not need packing keys.
-        // TwoPacking uses K_g/K_h plus packing_k_g/packing_k_h (4*ell rows total).
+        // TwoPacking adds the packing matrices to the base pair (4*ell rows total).
         let total_encryptions = match self.variant {
             InspireVariant::NoPacking => 0,
             InspireVariant::OnePacking => galois_key_rows,
@@ -287,16 +287,12 @@ impl CostEstimator {
 
         // Storage: each KS row is an RLWE ciphertext
         let ks_bytes = total_encryptions.saturating_mul(self.rlwe_bytes());
-        let crs_bytes = d
-            .saturating_mul(d)
-            .saturating_mul(self.crt_moduli_count())
-            .saturating_mul(8); // CRS a-vectors: d polynomials of d coefficients
 
         OpCounts {
             ntt_transforms,
             poly_multiplications,
             poly_additions: total_encryptions,
-            bytes: ks_bytes.saturating_add(crs_bytes),
+            bytes: ks_bytes,
             ..Default::default()
         }
     }

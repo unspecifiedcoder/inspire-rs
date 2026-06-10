@@ -4,7 +4,7 @@
 //!
 //! The setup phase generates:
 //!
-//! - `ServerCrs`: Public parameters (key-switching matrices, gadget, CRS vectors)
+//! - `ServerCrs`: Public parameters (galois keys, gadget, InspiRING packing seeds)
 //! - `EncodedDatabase`: Database encoded as polynomials
 //! - `RlweSecretKey`: Client secret key for encryption/decryption
 //!
@@ -26,48 +26,32 @@ use super::error::{pir_err, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::inspiring::{PackParams, PackingKeyBody};
-use crate::ks::{generate_automorphism_ks_matrix, generate_packing_ks_matrix, KeySwitchingMatrix};
-use crate::lwe::LweSecretKey;
+use crate::ks::{generate_automorphism_ks_matrix, KeySwitchingMatrix};
 use crate::math::{GaussianSampler, Poly};
 use crate::params::{InspireParams, ShardConfig};
 use crate::rgsw::GadgetVector;
-use crate::rlwe::{galois_generators, RlweSecretKey};
+use crate::rlwe::RlweSecretKey;
 
 use super::encode_db::encode_database;
 
 /// Server Common Reference String containing public parameters.
 ///
-/// Contains all public parameters needed for PIR query processing,
-/// including key-switching matrices, gadget parameters, and CRS vectors.
+/// Contains the public parameters needed for PIR query processing: galois keys,
+/// gadget parameters, and the InspiRING packing seeds.
 ///
 /// # Fields
 ///
 /// * `params` - System parameters (ring dimension, modulus, etc.)
-/// * `k_g` - Key-switching matrix for cyclic generator automorphism
-/// * `k_h` - Key-switching matrix for conjugation automorphism
-/// * `galois_keys` - Galois keys for tree packing automorphisms
+/// * `galois_keys` - Galois keys for the automorphism-packing (OnePacking) variant
 /// * `rgsw_gadget` - RGSW gadget vector parameters
-/// * `crs_a_vectors` - Fixed random vectors for CRS mode
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServerCrs {
     /// System parameters
     pub params: InspireParams,
-    /// First key-switching matrix (for cyclic generator g)
-    pub k_g: KeySwitchingMatrix,
-    /// Second key-switching matrix (for conjugation h)
-    pub k_h: KeySwitchingMatrix,
-    /// Galois keys for automorphisms
+    /// Galois keys for the automorphism-packing (OnePacking) variant.
     pub galois_keys: Vec<KeySwitchingMatrix>,
     /// RGSW gadget vector parameters
     pub rgsw_gadget: GadgetVector,
-    /// Fixed random vectors for CRS mode (one per LWE ciphertext slot)
-    pub crs_a_vectors: Vec<Vec<u64>>,
-    /// Key-switching matrix for InspiRING packing (LWE→RLWE, generator g)
-    /// Required for OnePacking/TwoPacking variants
-    pub packing_k_g: Option<KeySwitchingMatrix>,
-    /// Key-switching matrix for InspiRING packing (LWE→RLWE, conjugation h)
-    /// Required for full packing (d ciphertexts)
-    pub packing_k_h: Option<KeySwitchingMatrix>,
     /// InspiRING packing parameters (canonical API)
     #[serde(skip)]
     pub inspiring_pack_params: Option<PackParams>,
@@ -92,6 +76,53 @@ impl ServerCrs {
     /// Get the modulus
     pub fn modulus(&self) -> u64 {
         self.params.q
+    }
+
+    /// 16-byte version magic prefixing a serialized CRS, mirroring the storage
+    /// snapshot magic. Bumps on any CRS layout change so a stale blob fails loud
+    /// on decode instead of bincode silently mis-parsing a new layout.
+    pub const MAGIC: [u8; 16] = *b"RAVEN_CRS_v01\0\0\0";
+
+    /// Reject a CRS body larger than this before decoding, so a malicious or stale
+    /// (e.g. the pre-shrink ~35 MiB) blob cannot drive an unbounded bincode allocation.
+    /// A length pre-check is the only effective bound: bincode 1.3 forces an Infinite
+    /// limit on the slice path, so `with_limit` is a no-op there. ~6x the largest
+    /// legitimate CRS (d=4096 is ~2.5 MiB).
+    pub const DECODE_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
+    /// Serialize with the [`MAGIC`](Self::MAGIC) version prefix for wire / on-disk transport.
+    pub fn to_versioned_bytes(&self) -> Result<Vec<u8>> {
+        let mut out = Self::MAGIC.to_vec();
+        bincode::serialize_into(&mut out, self)
+            .map_err(|e| pir_err!("ServerCrs serialize failed: {e}"))?;
+        Ok(out)
+    }
+
+    /// Validate the [`MAGIC`](Self::MAGIC) prefix without decoding the body.
+    pub fn check_magic(bytes: &[u8]) -> Result<()> {
+        if bytes.get(..Self::MAGIC.len()) != Some(Self::MAGIC.as_slice()) {
+            return Err(pir_err!(
+                "ServerCrs version magic mismatch: expected a RAVEN_CRS_v01-prefixed blob; \
+                 a CRS layout change requires the operator to re-bootstrap"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Deserialize a [`to_versioned_bytes`](Self::to_versioned_bytes) blob,
+    /// validating the version prefix first so a layout mismatch is a typed error.
+    pub fn from_versioned_bytes(bytes: &[u8]) -> Result<Self> {
+        Self::check_magic(bytes)?;
+        let body = bytes.get(Self::MAGIC.len()..).unwrap_or_default();
+        if body.len() > Self::DECODE_LIMIT_BYTES {
+            return Err(pir_err!(
+                "ServerCrs blob too large: {} bytes exceeds the {} byte decode cap",
+                body.len(),
+                Self::DECODE_LIMIT_BYTES
+            ));
+        }
+        bincode::deserialize(body)
+            .map_err(|e| pir_err!("ServerCrs decode failed after version check: {e}"))
     }
 }
 
@@ -170,11 +201,6 @@ pub fn setup_with_rng<R: rand::RngCore + rand::CryptoRng>(
 
     let gadget = GadgetVector::new(params.gadget_base, params.gadget_len, q);
 
-    let (g1, g2) = galois_generators(d);
-
-    let k_g = generate_automorphism_ks_matrix(&rlwe_sk, g1, &gadget, sampler, &ctx);
-    let k_h = generate_automorphism_ks_matrix(&rlwe_sk, g2, &gadget, sampler, &ctx);
-
     // Generate galois keys for tree packing automorphisms
     // For tree packing we need τ_t where t = d/2^i + 1 for i = 0..log_d
     // These allow combining ciphertexts in the packing tree
@@ -185,17 +211,6 @@ pub fn setup_with_rng<R: rand::RngCore + rand::CryptoRng>(
         let ks_matrix = generate_automorphism_ks_matrix(&rlwe_sk, t, &gadget, sampler, &ctx);
         galois_keys.push(ks_matrix);
     }
-
-    let crs_a_vectors: Vec<Vec<u64>> = (0..d)
-        .map(|_| {
-            let poly = Poly::random_with_rng_moduli(d, params.moduli(), rng);
-            poly.coeffs().to_vec()
-        })
-        .collect();
-
-    let lwe_sk = LweSecretKey::from_rlwe(&rlwe_sk);
-    let packing_k_g = generate_packing_ks_matrix(&lwe_sk, &rlwe_sk, &gadget, sampler, &ctx);
-    let packing_k_h = generate_packing_ks_matrix(&lwe_sk, &rlwe_sk, &gadget, sampler, &ctx);
 
     // InspiRING canonical packing setup
     // γ (num_to_pack) must match the actual number of columns being packed
@@ -220,13 +235,8 @@ pub fn setup_with_rng<R: rand::RngCore + rand::CryptoRng>(
 
     let crs = ServerCrs {
         params: params.clone(),
-        k_g,
-        k_h,
         galois_keys,
         rgsw_gadget: gadget,
-        crs_a_vectors,
-        packing_k_g: Some(packing_k_g),
-        packing_k_h: Some(packing_k_h),
         inspiring_pack_params: Some(inspiring_pack_params),
         inspiring_packing_key: Some(inspiring_packing_key),
         inspiring_w_seed,
@@ -294,9 +304,6 @@ mod tests {
 
         assert_eq!(crs.ring_dim(), params.ring_dim);
         assert_eq!(crs.modulus(), params.q);
-        assert_eq!(crs.crs_a_vectors.len(), params.ring_dim);
-        assert_eq!(crs.k_g.gadget_len(), params.gadget_len);
-        assert_eq!(crs.k_h.gadget_len(), params.gadget_len);
 
         assert!(!encoded_db.shards.is_empty());
     }

@@ -11,7 +11,7 @@
 //!
 //! This rotation brings y_k to coefficient 0 of the result polynomial.
 
-use rayon::prelude::*;
+use crate::par_prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::inspiring::{packing_online, packing_online_fully_ntt};

@@ -195,7 +195,7 @@ fn maybe_generate_packing_keys(
     rlwe_sk: &RlweSecretKey,
     sampler: &mut GaussianSampler,
 ) -> Option<ClientPackingKeys> {
-    if crs.packing_k_g.is_none() || crs.inspiring_num_columns == 0 {
+    if crs.inspiring_num_columns == 0 {
         return None;
     }
 

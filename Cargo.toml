@@ -41,8 +41,8 @@ serde_json = "1.0"
 bincode = "1.3"
 byteorder = "1.5"
 
-# Parallelism
-rayon = "1.10"
+# Parallelism (server-only; the default/wasm build uses the sequential fallback)
+rayon = { version = "1.10", optional = true }
 
 # Cryptographic primitives
 rand = "0.8"
@@ -64,6 +64,11 @@ getrandom = { version = "0.2", features = ["js"] }
 
 [features]
 default = []
+# Server-only: parallelize the respond / packing-offline hot loops with rayon.
+# Default OFF so the client/wasm build pulls no rayon and uses the sequential
+# fallback (output byte-identical to the parallel path - the loops are pure
+# order-preserving maps over public data). The server enables this explicitly.
+parallel = ["dep:rayon"]
 # Enable AVX-512-IFMA52 multiply-accumulate dispatch in the
 # packing-offline hot kernel (`Poly::mul_acc_ntt_domain`). Default OFF;
 # safe to enable on any target — runtime CPUID gates the dispatch and

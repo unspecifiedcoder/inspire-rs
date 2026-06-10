@@ -68,5 +68,5 @@ pub use respond::{
     respond_seeded_with_variant, respond_sequential, respond_with_variant, ServerInspiringCache,
     ServerResponse,
 };
-pub use session::{ClientSession, ServerSessionStore};
-pub use setup::{setup, EncodedDatabase, InspireCrs, ServerCrs, ShardData};
+pub use session::{ClientSession, ServerSessionStore, SessionResidue};
+pub use setup::{setup, setup_with_rng, EncodedDatabase, InspireCrs, ServerCrs, ShardData};

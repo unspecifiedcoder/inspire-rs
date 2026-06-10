@@ -13,6 +13,7 @@ pub mod inspiring;
 pub mod ks;
 pub mod lwe;
 pub mod math;
+mod par_prelude;
 pub mod params;
 pub mod pir;
 pub mod rgsw;
@@ -24,9 +25,10 @@ pub use pir::{
     respond_inspiring_cached, respond_inspiring_cached_with_session, respond_one_packing,
     respond_seeded, respond_seeded_inspiring, respond_seeded_inspiring_cached,
     respond_seeded_inspiring_cached_with_session, respond_seeded_packed,
-    respond_seeded_with_variant, respond_with_variant, setup, ClientQuery, ClientSession,
-    ClientState, EncodedDatabase, InspireCrs, PackingMode, SeededClientQuery, ServerCrs,
-    ServerInspiringCache, ServerResponse, ServerSessionHandle, ServerSessionStore, ShardData,
+    respond_seeded_with_variant, respond_with_variant, setup, setup_with_rng, ClientQuery,
+    ClientSession, ClientState, EncodedDatabase, InspireCrs, PackingMode, SeededClientQuery,
+    ServerCrs, ServerInspiringCache, ServerResponse, ServerSessionHandle, ServerSessionStore,
+    SessionResidue, ShardData,
 };
 
 pub use params::{InspireParams, InspireVariant, SecurityLevel};

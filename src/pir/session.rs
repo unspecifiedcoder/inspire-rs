@@ -44,6 +44,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use serde::{Deserialize, Serialize};
+
 use crate::inspiring::{ClientPackingKeys, PackParams};
 use crate::lwe::LweSecretKey;
 use crate::math::{GaussianSampler, NttContext};
@@ -81,7 +83,7 @@ use super::setup::ServerCrs;
 /// Fallback: if the handshake is not used, `query_seeded` emits
 /// with keys inlined, preserving byte-for-byte the pre-handshake
 /// wire format + behavior.
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct ClientSession {
     /// Caller-supplied CRS. Held by value so the session owns a
     /// consistent snapshot; callers who need to rotate CRSes (e.g.
@@ -107,6 +109,16 @@ pub struct ClientSession {
     session_handle: Option<ServerSessionHandle>,
 }
 
+impl std::fmt::Debug for ClientSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientSession")
+            .field("ring_dim", &self.crs.ring_dim())
+            .field("has_inspiring_packing", &self.packing_keys.is_some())
+            .field("has_handle", &self.session_handle.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ClientSession {
     /// Build a session. Runs the heavy one-time work:
     /// `PackParams::new` + `ClientPackingKeys::generate` if the CRS
@@ -118,9 +130,7 @@ impl ClientSession {
     ) -> Result<Self> {
         let lwe_sk = rlwe_to_lwe_key(&rlwe_sk);
 
-        let (pack_params, packing_keys) = if crs.packing_k_g.is_some()
-            && crs.inspiring_num_columns > 0
-        {
+        let (pack_params, packing_keys) = if crs.inspiring_num_columns > 0 {
             let pp = PackParams::new(&crs.params, crs.inspiring_num_columns);
             let keys = ClientPackingKeys::generate(&rlwe_sk, &pp, crs.inspiring_w_seed, sampler);
             (Some(pp), Some(keys))
@@ -354,6 +364,91 @@ impl ClientSession {
     pub fn pack_params(&self) -> Option<&PackParams> {
         self.pack_params.as_ref()
     }
+
+    /// Capture the minimal persistable residue of this session.
+    ///
+    /// Omits `pack_params` (the automorph tables, a pure function of the
+    /// public CRS, never read on the query path) and the derived
+    /// `y_all*` rotations (`#[serde(skip)]`; the server re-derives them
+    /// from `y_body`), so a serialized residue is ~1.25 MiB vs the
+    /// session's >160 MiB resident tables. The live handshake handle is
+    /// not persisted - it is valid only against the issuing server-side
+    /// store; a rehydrated session emits inline keys and may
+    /// [`register_with`](Self::register_with) again.
+    ///
+    /// # Security
+    ///
+    /// Persists the client RLWE secret key at rest; opt-in (a consumer
+    /// that never calls this keeps no secret at rest). A stolen blob
+    /// plus observed traffic deanonymizes this client's query indices
+    /// (which index it read - not funds). The serialized bytes are not
+    /// zeroized; drop them promptly. Storage is not encrypted at rest.
+    pub fn to_residue(&self) -> SessionResidue {
+        SessionResidue {
+            crs: self.crs.clone(),
+            rlwe_sk: self.rlwe_sk.clone(),
+            packing_keys: self.packing_keys.clone(),
+        }
+    }
+
+    /// Rehydrate a session from a [`SessionResidue`] without rebuilding
+    /// the automorph tables.
+    ///
+    /// `lwe_sk` is re-derived from the RLWE key; `pack_params` stays
+    /// `None` (the query path never reads it) and `session_handle`
+    /// `None` (re-register via [`register_with`](Self::register_with)).
+    /// A rehydrated session serves [`query`](Self::query) /
+    /// [`query_seeded`](Self::query_seeded) but not
+    /// [`register_with_server_derivation`](Self::register_with_server_derivation)
+    /// (which needs `pack_params`). Fails fast if the residue is internally
+    /// inconsistent (CRS and secret-key ring_dim or modulus disagree), so a
+    /// secret-bearing rehydration is rejected here rather than at a later query.
+    pub fn from_residue(residue: SessionResidue) -> Result<Self> {
+        if residue.crs.ring_dim() != residue.rlwe_sk.ring_dim()
+            || residue.crs.modulus() != residue.rlwe_sk.modulus()
+        {
+            return Err(pir_err!(
+                "inconsistent SessionResidue: CRS (ring_dim {}, modulus {}) != secret key (ring_dim {}, modulus {})",
+                residue.crs.ring_dim(),
+                residue.crs.modulus(),
+                residue.rlwe_sk.ring_dim(),
+                residue.rlwe_sk.modulus()
+            ));
+        }
+        let lwe_sk = rlwe_to_lwe_key(&residue.rlwe_sk);
+        Ok(Self {
+            crs: residue.crs,
+            rlwe_sk: residue.rlwe_sk,
+            lwe_sk,
+            pack_params: None,
+            packing_keys: residue.packing_keys,
+            session_handle: None,
+        })
+    }
+}
+
+/// Minimal persistable form of a [`ClientSession`].
+///
+/// Produced by [`ClientSession::to_residue`], consumed by
+/// [`ClientSession::from_residue`]. Omits the >160 MiB automorph tables
+/// and the `#[serde(skip)]` `y_all*` rotations, so a serialized residue
+/// is ~1.25 MiB at production params. Contains the client RLWE secret
+/// key - see [`ClientSession::to_residue`] for the at-rest threat model;
+/// treat a serialized residue as secret material.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SessionResidue {
+    crs: ServerCrs,
+    rlwe_sk: RlweSecretKey,
+    packing_keys: Option<ClientPackingKeys>,
+}
+
+impl std::fmt::Debug for SessionResidue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionResidue")
+            .field("ring_dim", &self.crs.ring_dim())
+            .field("has_packing_keys", &self.packing_keys.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Copy of `query::rlwe_to_lwe_key`. The upstream function is
@@ -483,5 +578,55 @@ impl ServerSessionStore {
     /// Whether the store holds no sessions.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+#[cfg(test)]
+mod from_residue_failfast_tests {
+    use super::*;
+    use crate::math::GaussianSampler;
+    use crate::params::{InspireParams, SecurityLevel};
+    use crate::setup;
+
+    fn fresh_residue() -> SessionResidue {
+        let params = InspireParams {
+            ring_dim: 256,
+            q: 1_152_921_504_606_830_593,
+            crt_moduli: vec![1_152_921_504_606_830_593],
+            p: 65_536,
+            sigma: 6.4,
+            gadget_base: 1 << 20,
+            gadget_len: 3,
+            security_level: SecurityLevel::Bits128,
+        };
+        let db = vec![0u8; params.ring_dim * 32];
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 23);
+        let (crs, _encoded_db, rlwe_sk) = setup(&params, &db, 32, &mut sampler).expect("setup");
+        let session = ClientSession::new(crs, rlwe_sk, &mut sampler).expect("session");
+        session.to_residue()
+    }
+
+    #[test]
+    fn from_residue_rejects_ring_dim_mismatch() {
+        let mut residue = fresh_residue();
+        residue.crs.params.ring_dim += 1;
+        let err =
+            ClientSession::from_residue(residue).expect_err("ring_dim mismatch must be rejected");
+        assert!(
+            err.to_string().contains("inconsistent SessionResidue"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn from_residue_rejects_modulus_mismatch() {
+        let mut residue = fresh_residue();
+        residue.crs.params.q ^= 1;
+        let err =
+            ClientSession::from_residue(residue).expect_err("modulus mismatch must be rejected");
+        assert!(
+            err.to_string().contains("inconsistent SessionResidue"),
+            "got: {err}"
+        );
     }
 }

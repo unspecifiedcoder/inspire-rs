@@ -25,10 +25,18 @@ use serde::{Deserialize, Serialize};
 /// let sk = RlweSecretKey::from_poly(poly);
 /// assert_eq!(sk.ring_dim(), 256);
 /// ```
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct RlweSecretKey {
     /// Secret polynomial in R_q.
     pub poly: Poly,
+}
+
+impl std::fmt::Debug for RlweSecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RlweSecretKey")
+            .field("ring_dim", &self.ring_dim())
+            .finish_non_exhaustive()
+    }
 }
 
 /// RLWE ciphertext: (a, b) ∈ R_q × R_q where b = -a·s + e + Δ·m.

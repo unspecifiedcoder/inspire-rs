@@ -996,7 +996,7 @@ pub fn packing_offline(
     // per-shard speedup approaches 16x on this region. The packing_offline
     // region dominates server time (~73% at 2^20 × 256 B); parallelizing
     // brings server_ms close to the throughput threshold.
-    use rayon::prelude::*;
+    use crate::par_prelude::*;
     let r_all: Vec<Poly> = (0..num_to_pack)
         .into_par_iter()
         .map(|i| {
