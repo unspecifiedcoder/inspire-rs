@@ -11,7 +11,9 @@
 //!    respond/packing kernels are all `par_iter().map(pure_fn).collect()` over PUBLIC data, so
 //!    their byte-identity reduces to rayon's order-preserving `collect`. This pins that fact and
 //!    catches a future non-order-preserving `par_iter`.
-//! Production-cell decode (d=2048) under `--features parallel` is covered by `e2e_pir`.
+//! Production-cell decode (d=2048) is NOT covered by `e2e_pir`, which pins every test to d=256
+//! (`tests/e2e_pir.rs:14`). The d=2048 decode grids are
+//! `tests/commit_e_two_crt_regression_grid.rs` and `tests/two_crt_bisection.rs`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
 

@@ -19,10 +19,14 @@ HTTP endpoints.
 
 ### Query Privacy (Computational)
 
-The server cannot determine which database index the client is querying,
+The server cannot determine which *index within a shard* the client is querying,
 assuming the hardness of ring-LWE with the chosen parameters (128-bit security
-level). The query is an RGSW encryption of an inverse monomial — without the
-secret key, the server gains no information about the target index.
+level). The query is an RGSW encryption of an inverse monomial; without the
+secret key, the server gains no information about the local index.
+
+This guarantee stops at the shard boundary. `shard_id` travels in cleartext and
+the shard is capped at `ring_dim` entries, so the anonymity set is at most 2048
+entries at the shipped preset. See Known Limitation 1.
 
 ### Constant-Size Communication
 
@@ -44,17 +48,37 @@ network layer (e.g., when combined with Tor or a VPN).
 
 ### 1. Shard ID Sent in Cleartext
 
-The `shard_id` field in `ClientQuery` is sent unencrypted. This reveals which
-database shard contains the target entry, reducing the anonymity set from the
-full database to a single shard (~33M entries for Ethereum state with default
-parameters).
+The `shard_id` field in `ClientQuery` is sent unencrypted (`src/pir/query.rs:128`).
+This reveals which shard holds the target entry, so the anonymity set is one
+shard, not the database.
 
-**Impact**: For a 72-shard deployment, an observer learns a 1/72 partition of
-where the target entry resides.
+**A shard is hard-capped at `ring_dim` entries.** `encode_db` rejects any
+`ShardConfig` whose `entries_per_shard` exceeds `params.ring_dim`
+(`src/pir/encode_db.rs:125`), because InspiRING packing places one entry per ring
+coefficient. The shipped 128-bit preset `InspireParams::secure_128_d2048` sets
+`ring_dim = 2048` (`src/params.rs:213`, `src/params.rs:230`), so the largest
+encodable shard, and therefore the largest achievable anonymity set, is **2048
+entries**. The Raven Railgun deployment that consumes this crate runs exactly at
+that cap: `record_size = 512`, `entries_per_shard = 2048`
+(`adapters/railgun/examples/mainnet-6-instance.toml` in the consuming repo).
 
-**Mitigation**: This is an inherent design trade-off for performance. The shard
-size is large enough that the anonymity set remains substantial. Future work
-could explore oblivious shard selection at the cost of additional computation.
+**Impact**: An observer of a single query learns the target is one of at most
+2048 entries in the named shard. Over a database of N entries that is a
+1-in-`ceil(N / 2048)` partition, not a 1-in-shard-count partition of a large
+shard. Repeated queries compound it: the shard-access pattern across a session
+is fully visible and the protocol does nothing to hide it.
+
+**`ShardConfig::for_flat_db` presets are not achievable anonymity sets.** That
+constructor hardcodes `shard_size_bytes = 1 GB` (`src/params.rs:959`), which at
+32-byte entries computes 33,554,432 entries per shard. That is 16384x the
+`ring_dim` cap and `encode_db` rejects it with a typed error before any query is
+served. Only configurations satisfying
+`shard_size_bytes / entry_size_bytes <= ring_dim` encode at all.
+
+**Mitigation**: None in-protocol. `InspireParams::secure_128_d4096`
+(`src/params.rs:266`) raises the cap to 4096 entries at higher per-query cost.
+Hiding shard identity would need multi-shard querying or oblivious shard
+selection; neither is implemented.
 
 ### 2. Server Response Includes Processing Time
 
@@ -132,8 +156,8 @@ learns which indices were queried.
 
 | Data | Where | Encrypted | Notes |
 |------|-------|-----------|-------|
-| Query index | Client → Server | Yes (RGSW) | Computationally hidden |
-| Shard ID | Client → Server | No | Reveals shard partition |
+| Local index within shard | Client → Server | Yes (RGSW) | Computationally hidden |
+| Shard ID | Client → Server | No | Anonymity set is one shard, capped at `ring_dim` (2048 at the shipped preset) |
 | Response entry | Server → Client | Yes (RLWE) | Decrypted client-side |
 | Processing time | Server → Client | No | Potential timing side-channel |
 | Secret key | Client filesystem | No | Plaintext JSON |
