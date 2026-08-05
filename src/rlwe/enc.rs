@@ -1,7 +1,4 @@
-//! RLWE encryption and decryption
-//!
-//! Implements encryption: b = -a·s + e + Δ·m
-//! where Δ = ⌊q/p⌋ is the scaling factor.
+//! RLWE encryption and decryption; `delta = floor(q/p)` is the scaling factor.
 
 use crate::lwe::LweCiphertext;
 use crate::math::{GaussianSampler, NttContext, Poly};
@@ -10,7 +7,7 @@ use crate::params::InspireParams;
 use super::types::{RlweCiphertext, RlweSecretKey};
 
 impl RlweSecretKey {
-    /// Generate a secret key from Gaussian distribution
+    /// Samples a secret key from the error distribution.
     pub fn generate(params: &InspireParams, sampler: &mut GaussianSampler) -> Self {
         let poly = Poly::sample_gaussian_moduli(params.ring_dim, params.moduli(), sampler);
         Self { poly }
@@ -18,17 +15,7 @@ impl RlweSecretKey {
 }
 
 impl RlweCiphertext {
-    /// Encrypt a message polynomial
-    ///
-    /// Computes: (a, b) where b = -a·s + e + Δ·m
-    ///
-    /// # Arguments
-    /// * `sk` - Secret key
-    /// * `message_poly` - Message polynomial (coefficients in [0, p))
-    /// * `delta` - Scaling factor Δ = ⌊q/p⌋
-    /// * `a_random` - Random polynomial a ∈ R_q
-    /// * `error` - Error polynomial e sampled from Gaussian
-    /// * `ctx` - NTT context for polynomial multiplication
+    /// `(a, -a*s + e + delta*m)`; `message_poly` coefficients MUST lie in `[0, p)`.
     pub fn encrypt(
         sk: &RlweSecretKey,
         message_poly: &Poly,
@@ -37,23 +24,14 @@ impl RlweCiphertext {
         error: &Poly,
         ctx: &NttContext,
     ) -> Self {
-        // Compute Δ·m
         let scaled_msg = message_poly.scalar_mul(delta);
-
-        // Compute -a·s
-        let a_s = a_random.mul_ntt(&sk.poly, ctx);
-        let neg_a_s = -a_s;
-
-        // b = -a·s + e + Δ·m
+        let neg_a_s = -a_random.mul_ntt(&sk.poly, ctx);
         let b = &(&neg_a_s + error) + &scaled_msg;
 
         Self { a: a_random, b }
     }
 
-    /// Encrypt using Common Reference String (CRS) mode
-    ///
-    /// In CRS mode, `a` is derived from a public seed rather than randomly sampled.
-    /// This reduces communication in the PIR protocol.
+    /// [`Self::encrypt`] against a CRS-derived `a`, which need not be transmitted.
     pub fn encrypt_with_crs(
         sk: &RlweSecretKey,
         message_poly: &Poly,
@@ -62,14 +40,8 @@ impl RlweCiphertext {
         error: &Poly,
         ctx: &NttContext,
     ) -> Self {
-        // Compute Δ·m
         let scaled_msg = message_poly.scalar_mul(delta);
-
-        // Compute -a·s
-        let a_s = crs_a.mul_ntt(&sk.poly, ctx);
-        let neg_a_s = -a_s;
-
-        // b = -a·s + e + Δ·m
+        let neg_a_s = -crs_a.mul_ntt(&sk.poly, ctx);
         let b = &(&neg_a_s + error) + &scaled_msg;
 
         Self {
@@ -78,27 +50,16 @@ impl RlweCiphertext {
         }
     }
 
-    /// Decrypt ciphertext to recover message polynomial
-    ///
-    /// Computes: m = ⌊(a·s + b) · p / q⌉ mod p
-    ///
-    /// # Arguments
-    /// * `sk` - Secret key
-    /// * `delta` - Scaling factor Δ = ⌊q/p⌋
-    /// * `p` - Plaintext modulus
-    /// * `ctx` - NTT context for polynomial multiplication
+    /// `round((a*s + b) / delta) mod p`.
     pub fn decrypt(&self, sk: &RlweSecretKey, delta: u64, p: u64, ctx: &NttContext) -> Poly {
         let d = self.ring_dim();
 
-        // Compute a·s + b = e + Δ·m
         let a_s = self.a.mul_ntt(&sk.poly, ctx);
         let noisy_msg = &a_s + &self.b;
 
-        // Round to recover message: m = ⌊(a·s + b) / Δ⌉ mod p
         let mut coeffs = vec![0u64; d];
         for (i, coeff) in coeffs.iter_mut().enumerate().take(d) {
             let val = noisy_msg.coeff(i);
-            // Round: (val + Δ/2) / Δ mod p
             let half_delta = delta / 2;
             let rounded = ((val as u128 + half_delta as u128) / delta as u128) as u64;
             *coeff = rounded % p;
@@ -107,10 +68,7 @@ impl RlweCiphertext {
         Poly::from_coeffs(coeffs, p)
     }
 
-    /// Homomorphic addition of two ciphertexts
-    ///
-    /// (a1, b1) + (a2, b2) = (a1 + a2, b1 + b2)
-    /// Decrypts to m1 + m2
+    /// Componentwise sum, decrypting to `m1 + m2`.
     pub fn add(&self, other: &RlweCiphertext) -> RlweCiphertext {
         RlweCiphertext {
             a: &self.a + &other.a,
@@ -118,10 +76,7 @@ impl RlweCiphertext {
         }
     }
 
-    /// Homomorphic subtraction of two ciphertexts
-    ///
-    /// (a1, b1) - (a2, b2) = (a1 - a2, b1 - b2)
-    /// Decrypts to m1 - m2
+    /// Componentwise difference, decrypting to `m1 - m2`.
     pub fn sub(&self, other: &RlweCiphertext) -> RlweCiphertext {
         RlweCiphertext {
             a: &self.a - &other.a,
@@ -129,10 +84,7 @@ impl RlweCiphertext {
         }
     }
 
-    /// Multiply ciphertext by a scalar
-    ///
-    /// c · (a, b) = (c·a, c·b)
-    /// Decrypts to c·m
+    /// Componentwise scalar product, decrypting to `c*m`.
     pub fn scalar_mul(&self, scalar: u64) -> RlweCiphertext {
         RlweCiphertext {
             a: self.a.scalar_mul(scalar),
@@ -140,10 +92,7 @@ impl RlweCiphertext {
         }
     }
 
-    /// Multiply ciphertext by a plaintext polynomial
-    ///
-    /// p(X) · (a, b) = (p(X)·a, p(X)·b)
-    /// Decrypts to p(X)·m(X) mod (X^d + 1)
+    /// Componentwise plaintext product, decrypting to `p(X)*m(X) mod (X^d + 1)`.
     pub fn poly_mul(&self, plaintext_poly: &Poly, ctx: &NttContext) -> RlweCiphertext {
         RlweCiphertext {
             a: self.a.mul_ntt(plaintext_poly, ctx),
@@ -151,26 +100,15 @@ impl RlweCiphertext {
         }
     }
 
-    /// Create an encryption of zero with zero error
-    ///
-    /// This creates (0, 0) which decrypts to 0.
-    /// Useful as an identity element for homomorphic addition.
+    /// `(0, 0)`, the identity for homomorphic addition.
     pub fn zero(params: &InspireParams) -> RlweCiphertext {
         let a = Poly::zero_moduli(params.ring_dim, params.moduli());
         let b = Poly::zero_moduli(params.ring_dim, params.moduli());
         RlweCiphertext { a, b }
     }
 
-    /// Create a trivial encryption of a message polynomial
-    ///
-    /// Trivial encryption: (0, Δ·m) - decrypts correctly with any secret key.
-    /// No encryption security (message is visible), but useful for homomorphic
-    /// operations when we want to operate on a known plaintext.
-    ///
-    /// # Arguments
-    /// * `message_poly` - Message polynomial (coefficients in [0, p))
-    /// * `delta` - Scaling factor Δ = ⌊q/p⌋
-    /// * `params` - System parameters
+    /// `(0, delta*m)`: decrypts under any key and hides nothing, for folding a
+    /// known plaintext into a homomorphic chain.
     pub fn trivial_encrypt(
         message_poly: &Poly,
         delta: u64,
@@ -181,17 +119,7 @@ impl RlweCiphertext {
         RlweCiphertext { a, b }
     }
 
-    /// Extract an LWE ciphertext encrypting coefficient 0 from this RLWE ciphertext
-    ///
-    /// This is the standard RLWE-to-LWE sample extraction at coefficient 0.
-    /// The resulting LWE ciphertext encrypts m_0 (the constant term of the message polynomial).
-    ///
-    /// Formula: If RLWE decryption is b(X) + a(X)·s(X) = m(X) + e(X),
-    /// then coefficient 0 gives: b_0 + Σ_i a_i · s_{-i mod d} = m_0 + e_0
-    ///
-    /// The LWE ciphertext (a', b') is:
-    /// - a'_i = a_{d-i mod d} for i > 0, a'_0 = a_0
-    /// - b' = b_0
+    /// RLWE-to-LWE sample extraction at coefficient 0: `a'_i = a_{d-i mod d}`, `b' = b_0`.
     pub fn sample_extract_coeff0(&self) -> LweCiphertext {
         let d = self.ring_dim();
         let q = self.modulus();
@@ -221,7 +149,8 @@ mod tests {
     }
 
     fn random_poly(params: &InspireParams) -> Poly {
-        let mut rng = rand::thread_rng();
+        use rand::SeedableRng;
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(0x5eed);
         Poly::random_with_rng_moduli(params.ring_dim, params.moduli(), &mut rng)
     }
 
@@ -234,35 +163,24 @@ mod tests {
         let params = test_params();
         let delta = params.delta();
         let ctx = make_ctx(&params);
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
-        // Generate secret key
         let sk = RlweSecretKey::generate(&params, &mut sampler);
 
-        // Create message polynomial with small coefficients
         let msg_coeffs: Vec<u64> = (0..params.ring_dim)
             .map(|i| (i as u64) % params.p)
             .collect();
         let message = Poly::from_coeffs_moduli(msg_coeffs.clone(), params.moduli());
 
-        // Generate random a and error
         let a_random = random_poly(&params);
         let error = sample_error_poly(&params, &mut sampler);
 
-        // Encrypt
         let ct = RlweCiphertext::encrypt(&sk, &message, delta, a_random, &error, &ctx);
 
-        // Decrypt
         let decrypted = ct.decrypt(&sk, delta, params.p, &ctx);
 
-        // Verify
         for (i, expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
-            assert_eq!(
-                decrypted.coeff(i),
-                *expected,
-                "Mismatch at coefficient {}",
-                i
-            );
+            assert_eq!(decrypted.coeff(i), *expected, "Mismatch at coefficient {i}");
         }
     }
 
@@ -271,11 +189,10 @@ mod tests {
         let params = test_params();
         let delta = params.delta();
         let ctx = make_ctx(&params);
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let sk = RlweSecretKey::generate(&params, &mut sampler);
 
-        // Encrypt zero message
         let message = Poly::zero_moduli(params.ring_dim, params.moduli());
         let a_random = random_poly(&params);
         let error = sample_error_poly(&params, &mut sampler);
@@ -284,7 +201,7 @@ mod tests {
         let decrypted = ct.decrypt(&sk, delta, params.p, &ctx);
 
         for i in 0..params.ring_dim {
-            assert_eq!(decrypted.coeff(i), 0, "Expected zero at coefficient {}", i);
+            assert_eq!(decrypted.coeff(i), 0, "Expected zero at coefficient {i}");
         }
     }
 
@@ -293,11 +210,10 @@ mod tests {
         let params = test_params();
         let delta = params.delta();
         let ctx = make_ctx(&params);
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let sk = RlweSecretKey::generate(&params, &mut sampler);
 
-        // Create two message polynomials
         let msg1_coeffs: Vec<u64> = (0..params.ring_dim).map(|i| (i as u64) % 100).collect();
         let msg2_coeffs: Vec<u64> = (0..params.ring_dim)
             .map(|i| ((i + 50) as u64) % 100)
@@ -306,7 +222,6 @@ mod tests {
         let msg1 = Poly::from_coeffs_moduli(msg1_coeffs.clone(), params.moduli());
         let msg2 = Poly::from_coeffs_moduli(msg2_coeffs.clone(), params.moduli());
 
-        // Encrypt both
         let a1 = random_poly(&params);
         let e1 = sample_error_poly(&params, &mut sampler);
         let ct1 = RlweCiphertext::encrypt(&sk, &msg1, delta, a1, &e1, &ctx);
@@ -315,19 +230,12 @@ mod tests {
         let e2 = sample_error_poly(&params, &mut sampler);
         let ct2 = RlweCiphertext::encrypt(&sk, &msg2, delta, a2, &e2, &ctx);
 
-        // Homomorphic add
         let ct_sum = ct1.add(&ct2);
         let decrypted = ct_sum.decrypt(&sk, delta, params.p, &ctx);
 
-        // Verify
         for i in 0..params.ring_dim {
             let expected = (msg1_coeffs[i] + msg2_coeffs[i]) % params.p;
-            assert_eq!(
-                decrypted.coeff(i),
-                expected,
-                "Mismatch at coefficient {}",
-                i
-            );
+            assert_eq!(decrypted.coeff(i), expected, "Mismatch at coefficient {i}");
         }
     }
 
@@ -336,7 +244,7 @@ mod tests {
         let params = test_params();
         let delta = params.delta();
         let ctx = make_ctx(&params);
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let sk = RlweSecretKey::generate(&params, &mut sampler);
 
@@ -361,12 +269,7 @@ mod tests {
 
         for i in 0..params.ring_dim {
             let expected = (msg1_coeffs[i] - msg2_coeffs[i]) % params.p;
-            assert_eq!(
-                decrypted.coeff(i),
-                expected,
-                "Mismatch at coefficient {}",
-                i
-            );
+            assert_eq!(decrypted.coeff(i), expected, "Mismatch at coefficient {i}");
         }
     }
 
@@ -375,7 +278,7 @@ mod tests {
         let params = test_params();
         let delta = params.delta();
         let ctx = make_ctx(&params);
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let sk = RlweSecretKey::generate(&params, &mut sampler);
 
@@ -392,12 +295,7 @@ mod tests {
 
         for (i, msg_coeff) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
             let expected = (*msg_coeff * scalar) % params.p;
-            assert_eq!(
-                decrypted.coeff(i),
-                expected,
-                "Mismatch at coefficient {}",
-                i
-            );
+            assert_eq!(decrypted.coeff(i), expected, "Mismatch at coefficient {i}");
         }
     }
 
@@ -406,7 +304,7 @@ mod tests {
         let params = test_params();
         let delta = params.delta();
         let ctx = make_ctx(&params);
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let sk = RlweSecretKey::generate(&params, &mut sampler);
 
@@ -423,11 +321,10 @@ mod tests {
         let params = test_params();
         let delta = params.delta();
         let ctx = make_ctx(&params);
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let sk = RlweSecretKey::generate(&params, &mut sampler);
 
-        // Simulate CRS: a publicly known random polynomial
         let crs_a = random_poly(&params);
 
         let msg_coeffs: Vec<u64> = (0..params.ring_dim)
@@ -440,12 +337,7 @@ mod tests {
         let decrypted = ct.decrypt(&sk, delta, params.p, &ctx);
 
         for (i, expected) in msg_coeffs.iter().enumerate().take(params.ring_dim) {
-            assert_eq!(
-                decrypted.coeff(i),
-                *expected,
-                "Mismatch at coefficient {}",
-                i
-            );
+            assert_eq!(decrypted.coeff(i), *expected, "Mismatch at coefficient {i}");
         }
     }
 }

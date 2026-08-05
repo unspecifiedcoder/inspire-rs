@@ -1,6 +1,5 @@
-//! Microbench: IFMA52 pointwise mul vs inspire-rs Montgomery.
-//!
-//! Gated behind `RAVEN_MICROBENCH=1` env var.
+//! IFMA52 pointwise mul against scalar Montgomery; runs only under
+//! `RAVEN_MICROBENCH=1`.
 
 use raven_inspire::math::ifma52::avx512_ifma::pointwise_mont_mul_x8;
 use raven_inspire::math::mod_q::DEFAULT_Q;
@@ -44,14 +43,11 @@ fn microbench_ifma52_x8_vs_montgomery_pointwise() {
     let q = DEFAULT_Q;
     let q_inv_neg = ctx.q_inv_neg_for_test(0);
 
-    // Build NTT-Montgomery-form inputs (representative of the state inside
-    // `packing_online` / backward recursion).
     let mut a = build_input(&ctx, 11);
     ctx.forward(&mut a);
     let mut b = build_input(&ctx, 17);
     ctx.forward(&mut b);
 
-    // Warmup.
     let mut out_mont = vec![0u64; N];
     for _ in 0..100 {
         ctx.pointwise_mul(&a, &b, &mut out_mont);
@@ -65,7 +61,6 @@ fn microbench_ifma52_x8_vs_montgomery_pointwise() {
         std::hint::black_box(&out_ifma);
     }
 
-    // Montgomery timing.
     let t0 = Instant::now();
     for _ in 0..ITERS {
         ctx.pointwise_mul(&a, &b, &mut out_mont);
@@ -73,7 +68,6 @@ fn microbench_ifma52_x8_vs_montgomery_pointwise() {
     }
     let mont_elapsed = t0.elapsed();
 
-    // IFMA52 timing.
     let t0 = Instant::now();
     for _ in 0..ITERS {
         unsafe {
@@ -98,7 +92,5 @@ fn microbench_ifma52_x8_vs_montgomery_pointwise() {
     );
     eprintln!("  Speedup:           {speedup:.3}x");
 
-    // Correctness spot-check after the timing: byte-identical results at
-    // a few positions.
     assert_eq!(out_mont, out_ifma, "results diverged during microbench run");
 }

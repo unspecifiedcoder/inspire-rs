@@ -1,36 +1,12 @@
-//! Database encoding for PIR
-//!
-//! Encodes database entries as polynomial coefficients for PIR queries.
-//!
-//! # Direct Coefficient Encoding
-//!
-//! Values are stored directly as polynomial coefficients:
-//! - Given values [y_0, y_1, ..., y_{t-1}], create polynomial h(X) = Σ y_k · X^k
-//! - The value y_k is stored at coefficient k
-//!
-//! To retrieve y_k, the query encrypts X^(-k) (the inverse monomial).
-//! Multiplying h(X) · X^(-k) rotates coefficients so y_k appears at position 0.
-//!
-//! In R_q = Z_q[X]/(X^d + 1), we have X^d = -1, so:
-//! - X^(-k) = -X^(d-k) for k > 0
-//! - X^(-0) = X^0 = 1
+//! Value y_k lives at coefficient k; retrieval is h(X) * X^(-k), and the ring is
+//! negacyclic (X^d = -1), so X^(-k) = -X^(d-k) for k > 0.
 
 use crate::math::Poly;
 use crate::params::{InspireParams, ShardConfig};
 
 use super::setup::ShardData;
 
-/// Encode a database column as polynomial coefficients
-///
-/// Given t values [y_0, y_1, ..., y_{t-1}], creates polynomial h(X) where
-/// the coefficient of X^k is y_k. This allows retrieval via monomial multiplication.
-///
-/// # Arguments
-/// * `column` - Column values to encode (t values)
-/// * `params` - System parameters
-///
-/// # Returns
-/// Polynomial h(X) = Σ y_k · X^k
+/// Encode column values as the coefficients of h(X).
 pub fn encode_column(column: &[u64], params: &InspireParams) -> Poly {
     let d = params.ring_dim;
     let q = params.q;
@@ -42,17 +18,7 @@ pub fn encode_column(column: &[u64], params: &InspireParams) -> Poly {
     encode_direct(column, d, q, params.moduli())
 }
 
-/// Direct coefficient encoding: store values as polynomial coefficients
-///
-/// Creates h(X) = y_0 + y_1·X + y_2·X² + ... + y_{t-1}·X^{t-1}
-///
-/// # Arguments
-/// * `values` - Values to encode at positions 0, 1, ..., t-1
-/// * `d` - Ring dimension
-/// * `q` - Modulus
-///
-/// # Returns
-/// Polynomial with values stored as coefficients
+/// Store `values` at coefficients 0..t-1 of a degree-`d` polynomial.
 pub fn encode_direct(values: &[u64], d: usize, q: u64, moduli: &[u64]) -> Poly {
     let mut coeffs = vec![0u64; d];
     for (i, &val) in values.iter().enumerate() {
@@ -63,20 +29,7 @@ pub fn encode_direct(values: &[u64], d: usize, q: u64, moduli: &[u64]) -> Poly {
     Poly::from_coeffs_moduli(coeffs, moduli)
 }
 
-/// Create inverse monomial X^(-k) mod (X^d + 1)
-///
-/// In R_q = Z_q\[X\]/(X^d + 1), we have X^d = -1, so:
-/// - X^(-k) = X^(2d-k) mod (X^d + 1)
-/// - For k > 0: X^(2d-k) = X^(d + (d-k)) = -X^(d-k)
-/// - For k = 0: X^0 = 1
-///
-/// # Arguments
-/// * `k` - The exponent (index to retrieve)
-/// * `d` - Ring dimension
-/// * `q` - Modulus
-///
-/// # Returns
-/// Polynomial representing X^(-k) = -X^(d-k) for k > 0, or 1 for k = 0
+/// X^(-k) mod (X^d + 1), i.e. -X^(d-k) for k > 0 and 1 for k = 0.
 pub fn inverse_monomial(k: usize, d: usize, q: u64, moduli: &[u64]) -> Poly {
     let mut coeffs = vec![0u64; d];
 
@@ -84,25 +37,13 @@ pub fn inverse_monomial(k: usize, d: usize, q: u64, moduli: &[u64]) -> Poly {
         coeffs[0] = 1;
     } else {
         let pos = d - k;
-        coeffs[pos] = q - 1; // -1 mod q
+        coeffs[pos] = q - 1;
     }
 
     Poly::from_coeffs_moduli(coeffs, moduli)
 }
 
-/// Encode full database into polynomial representation
-///
-/// Splits the database into shards, each containing at most d entries.
-/// Each shard is encoded as polynomials ready for PIR queries.
-///
-/// # Arguments
-/// * `database` - Raw database bytes (entries concatenated)
-/// * `entry_size` - Size of each entry in bytes
-/// * `params` - System parameters
-/// * `shard_config` - Configuration for database sharding
-///
-/// # Returns
-/// Vector of ShardData, each containing encoded polynomials
+/// Split concatenated entries into shards of at most `ring_dim` entries and encode each.
 pub fn encode_database(
     database: &[u8],
     entry_size: usize,
@@ -116,12 +57,8 @@ pub fn encode_database(
     let total_entries = database.len() / entry_size;
     let entries_per_shard = shard_config.entries_per_shard() as usize;
 
-    // Raven-local patch: promote the upstream `debug_assert!` to a
-    // runtime typed error. The original code relied on the debug_assert,
-    // which release builds drop; a mis-sized `ShardConfig` then flowed
-    // `global_index` unshrunk into `inverse_monomial(k, d)` where
-    // `d - k` wrapped to `u64::MAX - (k - d)` and panicked as an
-    // out-of-bounds index deep in the library.
+    // Typed, not debug_assert: release builds would let an oversized shard wrap `d - k`
+    // inside `inverse_monomial`.
     if entries_per_shard > params.ring_dim {
         return Err(super::error::PirError::new(format!(
             "entries_per_shard ({entries_per_shard}) must be <= ring_dim ({}); \
@@ -176,9 +113,6 @@ pub fn encode_database(
     Ok(shards)
 }
 
-/// Extract a 16-bit column value from an entry
-///
-/// Splits entry into 16-bit chunks for polynomial encoding.
 fn extract_column_value(entry: &[u8], column_idx: usize) -> u64 {
     let byte_offset = column_idx * 2;
 
@@ -193,9 +127,7 @@ fn extract_column_value(entry: &[u8], column_idx: usize) -> u64 {
     }
 }
 
-/// Reconstruct entry from column values
-///
-/// Inverse of extract_column_value: combines 16-bit values back into bytes.
+/// Inverse of the 16-bit column split: recombine column values into entry bytes.
 pub fn reconstruct_entry(column_values: &[u64], entry_size: usize) -> Vec<u8> {
     let mut entry = vec![0u8; entry_size];
 
@@ -213,18 +145,7 @@ pub fn reconstruct_entry(column_values: &[u64], entry_size: usize) -> Vec<u8> {
     entry
 }
 
-/// Generate evaluation points (unit monomials ±X^k)
-///
-/// z_k = X^(2d*k/t) for k = 0..t-1
-/// These are t-th roots of unity in the ring R_q = Z_q[X]/(X^d + 1).
-///
-/// # Arguments
-/// * `t` - Number of evaluation points
-/// * `d` - Ring dimension
-/// * `q` - Modulus
-///
-/// # Returns
-/// Vector of polynomials representing z_k = X^(2d*k/t)
+/// t-th roots of unity in R_q as monomials z_k = X^(2dk/t).
 #[allow(dead_code)]
 pub fn generate_eval_points_poly(t: usize, d: usize, q: u64, moduli: &[u64]) -> Vec<Poly> {
     if t == 0 {
@@ -243,9 +164,7 @@ pub fn generate_eval_points_poly(t: usize, d: usize, q: u64, moduli: &[u64]) -> 
     points
 }
 
-/// Create monomial X^power mod (X^d + 1)
-///
-/// X^d = -1, so X^(d+k) = -X^k
+/// X^power mod (X^d + 1); negacyclic, so X^(d+k) = -X^k.
 #[allow(dead_code)]
 fn monomial(power: usize, d: usize, q: u64, moduli: &[u64]) -> Poly {
     let mut coeffs = vec![0u64; d];
@@ -301,10 +220,10 @@ mod tests {
         let poly = encode_direct(&values, d, q, &[q]);
 
         for (i, &val) in values.iter().enumerate() {
-            assert_eq!(poly.coeff(i), val, "Coefficient {} should be {}", i, val);
+            assert_eq!(poly.coeff(i), val, "Coefficient {i} should be {val}");
         }
         for i in values.len()..d {
-            assert_eq!(poly.coeff(i), 0, "Coefficient {} should be 0", i);
+            assert_eq!(poly.coeff(i), 0, "Coefficient {i} should be 0");
         }
     }
 
@@ -372,9 +291,7 @@ mod tests {
             assert_eq!(
                 rotated.coeff(0),
                 expected,
-                "Rotation by {} should bring value {} to position 0",
-                k,
-                expected
+                "Rotation by {k} should bring value {expected} to position 0"
             );
         }
     }

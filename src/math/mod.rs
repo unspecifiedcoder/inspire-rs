@@ -1,26 +1,8 @@
-//! Mathematical primitives for InsPIRe PIR.
-//!
-//! This module provides the core mathematical operations required for
-//! lattice-based cryptography in the InsPIRe protocol:
-//!
-//! - **Modular arithmetic** over Z_q using Montgomery reduction
-//! - **Number-Theoretic Transform (NTT)** for fast polynomial multiplication
-//! - **Polynomial operations** over R_q = Z_q\[X\]/(X^d + 1)
-//! - **Discrete Gaussian sampling** for error term generation
-//!
-//! # Overview
-//!
-//! The InsPIRe protocol operates over the polynomial ring R_q = Z_q\[X\]/(X^d + 1),
-//! where d is typically 2048 or 4096 and q is an NTT-friendly prime (~2^60).
-//! All cryptographic operations (encryption, key switching, homomorphic operations)
-//! are built on these mathematical primitives.
-//!
-//! # Example
+//! Arithmetic over R_q = Z_q\[X\]/(X^d + 1), negacyclic.
 //!
 //! ```
 //! use raven_inspire::math::{Poly, NttContext};
 //!
-//! // Create a polynomial and convert to NTT domain
 //! let ctx = NttContext::with_default_q(256);
 //! let mut poly = Poly::random(256, ctx.modulus());
 //! poly.to_ntt(&ctx);
@@ -28,11 +10,7 @@
 
 pub mod crt;
 pub mod gaussian;
-// IFMA52 split-52 Montgomery infrastructure. Retained as library code
-// for (a) cross-check reference implementation used by Solinas KAT suite
-// (`tests/solinas_montgomery_kat.rs`); (b) future non-Solinas modulus
-// research (2-CRT 30-bit path, lazy Montgomery). The Solinas dispatch
-// supersedes it for the shipping single-prime DEFAULT_Q config.
+// Cross-check reference for the Solinas KAT suite; Solinas dispatch supersedes it for DEFAULT_Q.
 pub mod ifma52;
 pub mod mod_q;
 pub mod modular;

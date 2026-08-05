@@ -1,58 +1,88 @@
-//! Gaussian sampling for error generation
+//! Superseded stateful sampler shim; forwards to [`crate::math::gaussian::GaussianSampler`].
 
-use rand::Rng;
-use rand::SeedableRng;
-use rand_chacha::ChaCha20Rng;
+use crate::math::gaussian::{self, EntropyUnavailable};
 
-/// Gaussian sampler for error polynomials
+/// Forwarding shim.
+#[deprecated(
+    since = "0.1.0",
+    note = "use raven_inspire::math::GaussianSampler; this shim only forwards to it"
+)]
 pub struct GaussianSampler {
-    sigma: f64,
-    rng: ChaCha20Rng,
+    inner: gaussian::GaussianSampler,
 }
 
+#[allow(deprecated)]
 impl GaussianSampler {
-    /// Create a new Gaussian sampler with given standard deviation
+    /// Sampler over a fresh 32-byte draw from the platform entropy source.
+    pub fn try_new(sigma: f64) -> Result<Self, EntropyUnavailable> {
+        Ok(Self {
+            inner: gaussian::GaussianSampler::from_os_entropy(sigma)?,
+        })
+    }
+
+    /// [`Self::try_new`], aborting when the platform entropy source fails.
     pub fn new(sigma: f64) -> Self {
         Self {
-            sigma,
-            rng: ChaCha20Rng::from_entropy(),
+            inner: gaussian::GaussianSampler::new(sigma),
         }
     }
 
-    /// Create a seeded sampler for reproducibility
+    /// Seeded sampler, reproducible.
     pub fn with_seed(sigma: f64, seed: u64) -> Self {
         Self {
-            sigma,
-            rng: ChaCha20Rng::seed_from_u64(seed),
+            inner: gaussian::GaussianSampler::with_seed(sigma, seed),
         }
     }
 
-    /// Sample from discrete Gaussian using Box-Muller transform
+    /// One draw from D_sigma.
     pub fn sample(&mut self) -> i64 {
-        // Box-Muller transform for Gaussian sampling
-        let u1: f64 = self.rng.gen_range(0.0001..1.0);
-        let u2: f64 = self.rng.gen_range(0.0..1.0);
-
-        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
-        (z * self.sigma).round() as i64
+        self.inner.sample()
     }
 
-    /// Sample a vector of n discrete Gaussian values centered in Z_q
+    /// `n` draws, centered into Z_q.
     pub fn sample_vec_centered(&mut self, n: usize, q: u64) -> Vec<u64> {
-        (0..n)
-            .map(|_| {
-                let sample = self.sample();
-                if sample >= 0 {
-                    (sample as u64) % q
-                } else {
-                    q - ((-sample) as u64 % q)
-                }
-            })
-            .collect()
+        self.inner.sample_vec_centered(n, q)
     }
 
-    /// Get the standard deviation
+    /// The standard deviation.
     pub fn sigma(&self) -> f64 {
-        self.sigma
+        self.inner.sigma()
+    }
+}
+
+#[cfg(test)]
+#[allow(deprecated)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shim_matches_canonical_sampler_stream() {
+        let mut shim = GaussianSampler::with_seed(3.2, 99);
+        let mut canonical = gaussian::GaussianSampler::with_seed(3.2, 99);
+        let from_shim: Vec<i64> = (0..10_000).map(|_| shim.sample()).collect();
+        let from_canonical: Vec<i64> = (0..10_000).map(|_| canonical.sample()).collect();
+        assert_eq!(from_shim, from_canonical);
+    }
+
+    #[test]
+    fn new_draws_a_distinct_stream_each_time() {
+        let a: Vec<i64> = (0..16)
+            .map(|_| GaussianSampler::new(3.2).sample())
+            .collect();
+        let b: Vec<i64> = (0..16)
+            .map(|_| GaussianSampler::new(3.2).sample())
+            .collect();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn try_new_draws_a_distinct_stream_each_time() {
+        let a: Vec<i64> = (0..16)
+            .map(|_| GaussianSampler::try_new(3.2).expect("OS entropy").sample())
+            .collect();
+        let b: Vec<i64> = (0..16)
+            .map(|_| GaussianSampler::try_new(3.2).expect("OS entropy").sample())
+            .collect();
+        assert_ne!(a, b);
     }
 }

@@ -1,10 +1,5 @@
-//! Main packing algorithms for InspiRING
-//!
-//! Provides the Pack and PartialPack procedures that combine Transform,
-//! Aggregation, and Collapse stages to convert LWE ciphertexts to RLWE.
-//!
-//! Key insight: In the CRS model, the `a` vectors are fixed, so most
-//! computation can be precomputed offline. Only `b` values change per query.
+//! Pack and PartialPack: transform, aggregate, collapse. Under the CRS model the `a`
+//! vectors are fixed, so only `b` changes per query and the rest precomputes offline.
 
 use crate::ks::KeySwitchingMatrix;
 use crate::lwe::LweCiphertext;
@@ -18,29 +13,10 @@ use super::types::AggregatedCiphertext;
 
 use serde::{Deserialize, Serialize};
 
-/// Main packing algorithm: pack d LWE ciphertexts into one RLWE ciphertext.
+/// Pack d LWE ciphertexts into one RLWE ciphertext carrying message i at coefficient i.
 ///
-/// Input: [A, b] ∈ Z_q^(d×(d+1)) (d LWE ciphertexts)
-/// Output: (a_fin, b_fin) ∈ R_q × R_q
-///
-/// The packed RLWE ciphertext encrypts a polynomial where the i-th
-/// coefficient contains the message from the i-th LWE ciphertext.
-///
-/// # Theorem reference
-///
-/// Correctness + noise-growth bound derive from **InsPIRe Theorem 2**
-/// ("full packing"; eprint 2025/1352 §4) which establishes
-/// `||e_pack||_∞ ≤ ℓ · d² · σ_χ² / 4 + d · σ_χ²` under the InspiRING
-/// 2-matrix construction, given that both K_g and K_h are generated
-/// from fresh error samples. The paper's Table 1 parameter sets bound
-/// this below `q / (2p)` so decryption is correct with high
-/// probability.
-///
-/// # Arguments
-/// * `lwe_ciphertexts` - Array of d LWE ciphertexts to pack
-/// * `k_g` - Key-switching matrix for cyclic generator
-/// * `k_h` - Key-switching matrix for conjugation
-/// * `params` - System parameters
+/// Noise bound is InsPIRe Theorem 2 (eprint 2025/1352), which holds only if K_g and
+/// K_h are drawn from fresh error samples.
 pub fn pack(
     lwe_ciphertexts: &[LweCiphertext],
     k_g: &KeySwitchingMatrix,
@@ -54,39 +30,21 @@ pub fn pack(
         "Must provide exactly d ciphertexts for full packing"
     );
 
-    // Stage 1: Transform each LWE ciphertext to intermediate form
     let intermediates: Vec<_> = lwe_ciphertexts
         .iter()
         .enumerate()
         .map(|(i, lwe)| transform_at_slot(lwe, i, params))
         .collect();
 
-    // Stage 2: Aggregate all intermediate ciphertexts
     let aggregated = aggregate(&intermediates, params);
 
-    // Stage 3: Collapse to RLWE using key-switching
     collapse(&aggregated, k_g, k_h, params)
 }
 
-/// Partial packing for γ ≤ d/2 LWE ciphertexts.
+/// Pack gamma <= d/2 ciphertexts using only K_g.
 ///
-/// When fewer ciphertexts need to be packed, this optimized version
-/// uses only one key-switching matrix (K_g), reducing key material.
-///
-/// # Theorem reference
-///
-/// Correctness + noise-growth bound derive from **InsPIRe Theorem 4**
-/// ("partial packing"; eprint 2025/1352 §4) which establishes
-/// `||e_pack||_∞ ≤ ℓ · γ · d · σ_χ² / 2 + γ · σ_χ²` at γ ≤ d/2 with
-/// the single K_g matrix. Smaller than Theorem 2's Full-packing bound
-/// because the conjugation branch is skipped; trade-off is that the
-/// γ output coefficients land at the EVEN positions 0, 2, 4, ..., 2γ-2
-/// (paper §4 Corollary 1).
-///
-/// # Arguments
-/// * `lwe_ciphertexts` - Array of γ ≤ d/2 LWE ciphertexts
-/// * `k_g` - Key-switching matrix for cyclic generator
-/// * `params` - System parameters
+/// Noise bound is InsPIRe Theorem 4 (eprint 2025/1352); skipping the conjugation
+/// branch lowers it, but the outputs land on the EVEN coefficients 0, 2, ..., 2*gamma-2.
 pub fn partial_pack(
     lwe_ciphertexts: &[LweCiphertext],
     k_g: &KeySwitchingMatrix,
@@ -95,7 +53,10 @@ pub fn partial_pack(
     let gamma = lwe_ciphertexts.len();
     let d = params.ring_dim;
 
-    assert!(gamma <= d / 2, "partial_pack requires γ ≤ d/2 ciphertexts");
+    assert!(
+        gamma <= d / 2,
+        "partial_pack requires gamma <= d/2 ciphertexts"
+    );
 
     if gamma == 0 {
         return RlweCiphertext::from_parts(
@@ -104,66 +65,35 @@ pub fn partial_pack(
         );
     }
 
-    // Stage 1: Transform using partial transform
     let intermediates: Vec<_> = lwe_ciphertexts
         .iter()
         .enumerate()
         .map(|(i, lwe)| transform_at_slot(lwe, i, params))
         .collect();
 
-    // Stage 2: Aggregate
     let aggregated = aggregate(&intermediates, params);
 
-    // Stage 3: Collapse using only K_g
     collapse_partial(gamma, &aggregated.to_intermediate(), k_g, params)
 }
 
-/// Precomputable offline work (CRS-dependent)
-///
-/// In the CRS model, the `a` vectors are fixed and publicly known.
-/// This struct holds precomputed values that depend only on:
-/// - The CRS `a` vectors
-/// - The key-switching matrices K_g, K_h
-///
-/// The online phase only needs to process the `b` values.
+/// Transform + Aggregate over the CRS `a` vectors, which the online phase reuses.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackingPrecomputation {
-    /// Precomputed aggregated polynomial for the a-component
-    /// This is the result of Transform + Aggregate on the CRS a vectors
     precomputed_a_aggregate: AggregatedCiphertext,
-
-    /// Number of ciphertexts this precomputation was built for
     num_ciphertexts: usize,
-
-    /// Ring dimension
     ring_dim: usize,
-
-    /// Modulus
     q: u64,
-    /// CRT moduli
     moduli: Vec<u64>,
 }
 
 impl PackingPrecomputation {
-    /// Get the number of ciphertexts this precomputation supports
+    /// Ciphertext count this precomputation was built for.
     pub fn num_ciphertexts(&self) -> usize {
         self.num_ciphertexts
     }
 }
 
-/// Precompute packing values for fixed CRS randomness
-///
-/// Given the fixed `a` vectors from the CRS, precompute everything
-/// that doesn't depend on the `b` values:
-/// - Transform each a vector
-/// - Aggregate the transformed a vectors
-/// - Prepare intermediate key-switching computations
-///
-/// # Arguments
-/// * `crs_a_vectors` - Fixed a vectors from CRS, one per LWE ciphertext
-/// * `k_g` - Key-switching matrix for cyclic generator
-/// * `k_h` - Key-switching matrix for conjugation
-/// * `params` - System parameters
+/// Precompute everything over the CRS `a` vectors that does not depend on `b`.
 pub fn precompute_packing(
     crs_a_vectors: &[Vec<u64>],
     _k_g: &KeySwitchingMatrix,
@@ -178,8 +108,7 @@ pub fn precompute_packing(
     assert!(!crs_a_vectors.is_empty(), "Must have at least one a vector");
     assert_eq!(crs_a_vectors[0].len(), d, "a vectors must have dimension d");
 
-    // Create dummy LWE ciphertexts with the CRS a vectors and b=0
-    // We only care about the a-component transformation
+    // b=0: only the a-component transformation matters here.
     let dummy_lwes: Vec<LweCiphertext> = crs_a_vectors
         .iter()
         .map(|a| LweCiphertext {
@@ -189,14 +118,12 @@ pub fn precompute_packing(
         })
         .collect();
 
-    // Transform each at its slot
     let intermediates: Vec<_> = dummy_lwes
         .iter()
         .enumerate()
         .map(|(i, lwe)| transform_at_slot(lwe, i, params))
         .collect();
 
-    // Aggregate the a components (b components will all be zero)
     let aggregated = aggregate(&intermediates, params);
 
     PackingPrecomputation {
@@ -208,17 +135,7 @@ pub fn precompute_packing(
     }
 }
 
-/// Online packing using precomputation
-///
-/// Given precomputed values for fixed CRS a vectors, pack LWE ciphertexts
-/// using only the `b` values. This is the fast online phase.
-///
-/// # Arguments
-/// * `lwe_b_values` - Only the b values from each LWE ciphertext
-/// * `precomp` - Precomputed values from `precompute_packing`
-/// * `k_g` - Key-switching matrix for cyclic generator
-/// * `k_h` - Key-switching matrix for conjugation
-/// * `params` - System parameters
+/// Online phase: pack from the `b` values alone against a `precompute_packing` result.
 pub fn pack_online(
     lwe_b_values: &[u64],
     precomp: &PackingPrecomputation,
@@ -235,8 +152,6 @@ pub fn pack_online(
         "Number of b values must match precomputation"
     );
 
-    // Create the b polynomial by embedding each b_i at position i
-    // This is: sum_i b_i * X^i
     let mut b_coeffs = vec![0u64; d];
     for (i, &b_val) in lwe_b_values.iter().enumerate() {
         if i < d {
@@ -245,13 +160,11 @@ pub fn pack_online(
     }
     let b_poly = Poly::from_coeffs_moduli(b_coeffs, moduli);
 
-    // Combine with precomputed a aggregate
     let full_aggregate = AggregatedCiphertext::new(
         precomp.precomputed_a_aggregate.a_polys.clone(),
         &precomp.precomputed_a_aggregate.b_poly + &b_poly,
     );
 
-    // Collapse to get final RLWE
     collapse(&full_aggregate, k_g, k_h, params)
 }
 
@@ -264,7 +177,6 @@ mod tests {
     use rand::SeedableRng;
 
     fn test_params() -> InspireParams {
-        // Use smaller params for faster tests
         InspireParams {
             ring_dim: 256,
             q: 1152921504606830593,
@@ -337,7 +249,7 @@ mod tests {
         let params = test_params();
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(98765);
 
-        let n = 16; // Small for testing
+        let n = 16;
         let crs_a_vectors: Vec<Vec<u64>> = (0..n)
             .map(|_| {
                 (0..params.ring_dim)
@@ -349,11 +261,9 @@ mod tests {
         let k_g = KeySwitchingMatrix::dummy(params.ring_dim, params.moduli(), params.gadget_len);
         let k_h = KeySwitchingMatrix::dummy(params.ring_dim, params.moduli(), params.gadget_len);
 
-        // Precompute
         let precomp = precompute_packing(&crs_a_vectors, &k_g, &k_h, &params);
         assert_eq!(precomp.num_ciphertexts(), n);
 
-        // Online phase
         let b_values: Vec<u64> = (0..n).map(|_| rng.gen_range(0..params.q)).collect();
         let result = pack_online(&b_values, &precomp, &k_g, &k_h, &params);
 
@@ -364,23 +274,19 @@ mod tests {
     fn test_pack_with_real_encryption() {
         let params = test_params();
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(11111);
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
-        // Generate LWE secret key
         let lwe_sk = LweSecretKey::generate(params.ring_dim, params.q, &mut sampler);
 
-        // Messages to pack
         let messages: Vec<u64> = (0..params.ring_dim)
             .map(|i| (i as u64 * 7) % params.p)
             .collect();
 
-        // Encrypt each message
         let lwe_cts: Vec<LweCiphertext> = messages
             .iter()
             .map(|&m| encrypt_lwe(&lwe_sk, m, &mut rng, &params))
             .collect();
 
-        // Verify LWE decryption works
         for (ct, &expected) in lwe_cts.iter().zip(messages.iter()) {
             let decrypted = ct.decrypt(&lwe_sk, params.delta(), params.p);
             assert_eq!(decrypted, expected, "LWE decryption failed");
@@ -389,12 +295,9 @@ mod tests {
         let k_g = KeySwitchingMatrix::dummy(params.ring_dim, params.moduli(), params.gadget_len);
         let k_h = KeySwitchingMatrix::dummy(params.ring_dim, params.moduli(), params.gadget_len);
 
-        // Pack
         let packed = pack(&lwe_cts, &k_g, &k_h, &params);
 
-        // Note: Full correctness test requires proper RLWE decryption with
-        // matching key setup. With dummy key-switching matrices, we can only
-        // verify the structure is correct.
+        // Dummy key-switching matrices, so only the shape is checkable here.
         assert_eq!(packed.ring_dim(), params.ring_dim);
     }
 
@@ -417,27 +320,22 @@ mod tests {
         let params = test_params();
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(33333);
 
-        // Create 4 LWE ciphertexts with known structure
         let n = 4;
         let lwe_cts: Vec<LweCiphertext> = (0..n).map(|_| random_lwe(&mut rng, &params)).collect();
 
-        // Transform at slots
         let intermediates: Vec<_> = lwe_cts
             .iter()
             .enumerate()
             .map(|(i, lwe)| transform_at_slot(lwe, i, &params))
             .collect();
 
-        // Aggregate
         let aggregated = aggregate(&intermediates, &params);
 
-        // The b polynomial should have lwe_cts[i].b at position i
         for (i, ct) in lwe_cts.iter().enumerate() {
             assert_eq!(
                 aggregated.b_poly.coeff(i),
                 ct.b,
-                "b coefficient mismatch at position {}",
-                i
+                "b coefficient mismatch at position {i}"
             );
         }
     }

@@ -1,6 +1,4 @@
-//! PIR Extract: Client response extraction
-//!
-//! Implements PIR.Extract(crs, state, response) → entry
+//! PIR.Extract: decrypt the server response and rebuild the entry bytes.
 
 use super::error::{ExtractError, Result};
 
@@ -11,23 +9,7 @@ use super::query::ClientState;
 use super::respond::ServerResponse;
 use super::setup::InspireCrs;
 
-/// PIR.Extract(crs, state, response) → entry
-///
-/// Extracts the database entry from the server's response.
-///
-/// # Algorithm
-/// 1. Decrypt the RLWE ciphertext using client's secret key
-/// 2. Extract the coefficient at the queried local index
-/// 3. Reconstruct the entry from polynomial coefficients
-///
-/// # Arguments
-/// * `crs` - Common reference string (public parameters)
-/// * `state` - Client state from query phase
-/// * `response` - Server's response
-/// * `entry_size` - Size of database entries in bytes
-///
-/// # Returns
-/// The retrieved database entry
+/// Decrypt an unpacked response; the rotated target sits in the constant term.
 pub fn extract(
     crs: &InspireCrs,
     state: &ClientState,
@@ -41,21 +23,18 @@ pub fn extract(
     let num_columns = (entry_size * 8).div_ceil(16);
     let mut column_values = Vec::with_capacity(num_columns);
 
-    // Use per-column ciphertexts if available (proper multi-column extraction)
-    if !response.column_ciphertexts.is_empty() {
-        for col_ct in response.column_ciphertexts.iter().take(num_columns) {
-            let decrypted = col_ct.decrypt(&state.rlwe_secret_key, delta, p, &ctx);
-            // After homomorphic evaluation, result is in CONSTANT TERM (coefficient 0)
-            let value = decrypted.coeff(0);
-            column_values.push(value);
-        }
-    } else {
-        // Fallback: all columns summed in single ciphertext
+    if response.column_ciphertexts.is_empty() {
         let decrypted = response
             .ciphertext
             .decrypt(&state.rlwe_secret_key, delta, p, &ctx);
         let value = decrypted.coeff(0);
         for _ in 0..num_columns {
+            column_values.push(value);
+        }
+    } else {
+        for col_ct in response.column_ciphertexts.iter().take(num_columns) {
+            let decrypted = col_ct.decrypt(&state.rlwe_secret_key, delta, p, &ctx);
+            let value = decrypted.coeff(0);
             column_values.push(value);
         }
     }
@@ -65,14 +44,7 @@ pub fn extract(
     Ok(entry)
 }
 
-/// PIR.Extract with explicit variant selection
-///
-/// Use this when the server responded with a specific variant.
-///
-/// # Variants
-/// - `NoPacking`: Reads from per-column ciphertexts (same as `extract`)
-/// - `OnePacking`: Reads columns from coefficients 0..num_cols of packed ciphertext
-/// - `TwoPacking`: Same packed response format as OnePacking (seeded query path)
+/// Dispatch extraction on the variant the server responded with.
 pub fn extract_with_variant(
     crs: &InspireCrs,
     state: &ClientState,
@@ -87,22 +59,9 @@ pub fn extract_with_variant(
     }
 }
 
-/// Extract from TwoPacking response (InsPIRe^2)
-///
-/// Raven-local patch: dispatches on the server's `packing_mode` tag.
-/// The pre-fork code always called `extract_packed` (tree-packed,
-/// d-scaled format), but the upstream binary bypassed
-/// `extract_with_variant` entirely for InspiRING-shaped responses
-/// because the tree-packed extractor silently decoded wrong bytes.
-/// The fork adds a tagged response type (`ServerResponse::packing_mode`)
-/// so a single dispatch does the right thing:
-///
-/// - `Some(PackingMode::Inspiring)` → `extract_inspiring` (no d-scaling)
-/// - `Some(PackingMode::Tree)` or `None` (legacy) → `extract_packed`
-///
-/// `None` preserves the legacy tree-packed behavior for any
-/// serialized response produced by pre-fork `inspire-rs` or third-party
-/// tooling that hasn't adopted the tag yet.
+/// Extract a TwoPacking response, dispatching on the server's `packing_mode` tag.
+/// An untagged (`None`) response is treated as tree-packed, which is what
+/// serializers predating the tag emit.
 pub fn extract_two_packing(
     crs: &InspireCrs,
     state: &ClientState,
@@ -116,13 +75,7 @@ pub fn extract_two_packing(
     }
 }
 
-/// Extract from OnePacking response (InsPIRe^1)
-///
-/// The packed ciphertext contains column values at coefficients 0, 1, 2, ...
-/// Each value is scaled by d (ring dimension) from tree packing.
-///
-/// We decrypt the packed ciphertext and read columns from their positions,
-/// then un-scale by dividing by d (using modular inverse).
+/// Extract a tree-packed response: columns sit at coefficients 0.. scaled by d.
 fn extract_packed(
     crs: &InspireCrs,
     state: &ClientState,
@@ -136,27 +89,18 @@ fn extract_packed(
 
     let num_columns = (entry_size * 8).div_ceil(16);
 
-    // Decrypt the packed ciphertext
     let decrypted = response
         .ciphertext
         .decrypt(&state.rlwe_secret_key, delta, p, &ctx);
 
-    // Extract column values from their positions.
-    // Values are scaled by d from tree packing, so we need d^{-1} mod p.
-    // The inverse only exists when gcd(d, p) == 1. For the shipping
-    // config (d=2048, p=65537 Fermat F4) it holds; for legacy test
-    // params (d=256, p=65536) it does not. Pre-fork code silently
-    // substituted 1, returning d-scaled garbage to the caller; we now
-    // surface the parameter misuse as a typed error instead. Callers
-    // can validate up front via `InspireParams::validate_strict_tree_packed`.
+    // d^{-1} exists only when gcd(d, p) == 1; substituting 1 would return d-scaled
+    // garbage, so the misuse is surfaced instead.
     let d_inv =
         mod_inverse(d as u64, p).ok_or(ExtractError::DegreeNotInvertible { d: d as u64, p })?;
 
     let mut column_values = Vec::with_capacity(num_columns);
     for col in 0..num_columns {
-        // Get the raw value at position col (scaled by d)
         let scaled_value = decrypted.coeff(col);
-        // Un-scale by multiplying by d^(-1) mod p
         let value = (scaled_value as u128 * d_inv as u128 % p as u128) as u64;
         column_values.push(value);
     }
@@ -166,10 +110,7 @@ fn extract_packed(
     Ok(entry)
 }
 
-/// Extract from InspiRING 2-matrix packing response
-///
-/// Unlike tree packing, InspiRING does NOT scale values by d.
-/// Values are placed at coefficients 0, 1, 2, ... at their natural scale.
+/// Extract an InspiRING-packed response; unlike tree packing it applies no d-scaling.
 pub fn extract_inspiring(
     crs: &InspireCrs,
     state: &ClientState,
@@ -182,12 +123,10 @@ pub fn extract_inspiring(
 
     let num_columns = (entry_size * 8).div_ceil(16);
 
-    // Decrypt the packed ciphertext
     let decrypted = response
         .ciphertext
         .decrypt(&state.rlwe_secret_key, delta, p, &ctx);
 
-    // Extract column values from their positions (NO d-scaling for InspiRING)
     let mut column_values = Vec::with_capacity(num_columns);
     for col in 0..num_columns {
         let value = decrypted.coeff(col);
@@ -199,13 +138,12 @@ pub fn extract_inspiring(
     Ok(entry)
 }
 
-/// Compute modular inverse using extended Euclidean algorithm
 fn mod_inverse(a: u64, m: u64) -> Option<u64> {
     let (g, x, _) = extended_gcd(a as i64, m as i64);
-    if g != 1 {
-        None
-    } else {
+    if g == 1 {
         Some(((x % m as i64 + m as i64) % m as i64) as u64)
+    } else {
+        None
     }
 }
 
@@ -218,10 +156,12 @@ fn extended_gcd(a: i64, b: i64) -> (i64, i64, i64) {
     }
 }
 
-/// Extract with noise tolerance
-///
-/// Uses rounding to handle small decryption errors.
+/// Extract, rounding coefficients that sit within `tolerance` of a wrap boundary.
 #[allow(dead_code)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "uniform Result shape across the extract family; the sibling entry points are genuinely fallible"
+)]
 pub fn extract_with_tolerance(
     crs: &InspireCrs,
     state: &ClientState,
@@ -245,19 +185,18 @@ pub fn extract_with_tolerance(
         value
     };
 
-    if !response.column_ciphertexts.is_empty() {
-        for col_ct in response.column_ciphertexts.iter().take(num_columns) {
-            let decrypted = col_ct.decrypt(&state.rlwe_secret_key, delta, p, &ctx);
-            // After homomorphic evaluation, result is in CONSTANT TERM (coefficient 0)
-            let value = apply_tolerance(decrypted.coeff(0));
-            column_values.push(value);
-        }
-    } else {
+    if response.column_ciphertexts.is_empty() {
         let decrypted = response
             .ciphertext
             .decrypt(&state.rlwe_secret_key, delta, p, &ctx);
         let value = apply_tolerance(decrypted.coeff(0));
         for _ in 0..num_columns {
+            column_values.push(value);
+        }
+    } else {
+        for col_ct in response.column_ciphertexts.iter().take(num_columns) {
+            let decrypted = col_ct.decrypt(&state.rlwe_secret_key, delta, p, &ctx);
+            let value = apply_tolerance(decrypted.coeff(0));
             column_values.push(value);
         }
     }
@@ -267,10 +206,12 @@ pub fn extract_with_tolerance(
     Ok(entry)
 }
 
-/// Extract a single coefficient at the queried index
-///
-/// Simplified extraction for debugging and testing.
+/// Decrypt and return the constant term alone.
 #[allow(dead_code)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "uniform Result shape across the extract family; the sibling entry points are genuinely fallible"
+)]
 pub fn extract_single_coeff(
     crs: &InspireCrs,
     state: &ClientState,
@@ -284,14 +225,15 @@ pub fn extract_single_coeff(
         .ciphertext
         .decrypt(&state.rlwe_secret_key, delta, p, &ctx);
 
-    // After homomorphic evaluation, result is in CONSTANT TERM (coefficient 0)
     Ok(decrypted.coeff(0))
 }
 
-/// Extract raw decrypted polynomial
-///
-/// Returns the full decrypted polynomial for analysis.
+/// Decrypt and return every coefficient.
 #[allow(dead_code)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "uniform Result shape across the extract family; the sibling entry points are genuinely fallible"
+)]
 pub fn extract_raw(
     crs: &InspireCrs,
     state: &ClientState,
@@ -332,7 +274,7 @@ mod tests {
     #[test]
     fn test_extract_produces_correct_length() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim;
@@ -365,7 +307,7 @@ mod tests {
     #[test]
     fn test_extract_single_coeff() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim;
@@ -395,7 +337,7 @@ mod tests {
     #[test]
     fn test_extract_raw() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim;
@@ -442,15 +384,11 @@ mod tests {
         }
     }
 
-    /// C9 (typed error): legacy test params have d=256, p=65536 so
-    /// gcd(d, p) = 256 != 1 and `mod_inverse(d, p)` returns `None`.
-    /// `extract_packed` must surface `ExtractError::DegreeNotInvertible`
-    /// rather than silently substituting 1 and returning d-scaled garbage.
     #[test]
     fn extract_packed_returns_degree_not_invertible_when_gcd_d_p_nonunit() {
         use crate::pir::query::PackingMode;
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim;
@@ -472,9 +410,7 @@ mod tests {
         .unwrap();
 
         let mut response = respond(&crs, &encoded_db, &client_query).unwrap();
-        // Force the tree-packed extract path: NoPacking responses populate
-        // `column_ciphertexts`; we tag the response as Tree and clear the
-        // per-column ciphertexts so `extract_packed` (and only it) runs.
+        // Clearing `column_ciphertexts` is what forces `extract_packed` to run.
         response.packing_mode = Some(PackingMode::Tree);
         response.column_ciphertexts.clear();
 
@@ -494,17 +430,8 @@ mod tests {
         );
     }
 
-    /// C9 (typed error): with `gcd(d, p) == 1` the modular inverse exists
-    /// and `extract_packed` returns the expected entry length without
-    /// erroring. Uses a synthetic fixture matching the shipping invariant
-    /// (we only assert it doesn't error and returns the right shape;
-    /// extracting semantically-correct bytes from a manually-constructed
-    /// tree-packed response without going through the tree-packed respond
-    /// pipeline is out of scope here).
     #[test]
     fn extract_packed_succeeds_when_gcd_d_p_is_one() {
-        // Construct a tiny synthetic params set with gcd(d, p) == 1.
-        // d=8, p=17 -> gcd = 1.
         let params = crate::params::InspireParams {
             ring_dim: 8,
             q: 1152921504606830593,
@@ -516,9 +443,6 @@ mod tests {
             security_level: crate::params::SecurityLevel::Bits128,
         };
 
-        // We don't run a full setup here; instead we exercise just
-        // `mod_inverse` directly to lock down that this regime computes
-        // the inverse rather than returning None.
         let inv = mod_inverse(params.ring_dim as u64, params.p).unwrap();
         assert_eq!(
             (params.ring_dim as u128 * inv as u128) % params.p as u128,
@@ -527,9 +451,6 @@ mod tests {
         );
     }
 
-    /// C9 (typed error): explicit `d = p` is the canonical witness for
-    /// `gcd(d, p) != 1` (gcd is p itself). `mod_inverse` must return
-    /// `None`, and the surfaced error must carry the offending values.
     #[test]
     fn extract_error_degree_not_invertible_when_d_equals_p() {
         let p = 257u64;
@@ -544,7 +465,7 @@ mod tests {
     #[test]
     fn test_extract_with_tolerance() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim;

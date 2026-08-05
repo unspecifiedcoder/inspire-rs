@@ -1,23 +1,6 @@
-//! Server-side y_all_ntt derivation byte-identity KAT.
-//! KAT.
-//!
-//! The wire-format gap comes from
-//! `ClientPackingKeys::y_all` + `y_all_ntt` being `#[serde(skip)]`:
-//! deserialized servers see only `y_body` and dispatch falls to the
-//! slow `packing_online` path. The fix derives `y_all` + `y_all_ntt`
-//! server-side from `y_body` so the fully_ntt dispatch fires.
-//!
-//! These tests prove the derivation is byte-identical to the in-
-//! process client-computed version.
-//!
-//! ### What "byte-identical" means here
-//!
-//! Because `ClientPackingKeys::generate` builds `y_all` + `y_all_ntt`
-//! from `y_body` via the exact code path that `generate_rotations`
-//! runs + `Poly::to_ntt`, the server-side helper
-//! `ensure_server_derivatives` produces the same values. The KAT
-//! proves this across a randomized input vector + the configured
-//! `InspireParams` used at the SLO cell.
+//! `y_all` and `y_all_ntt` are `#[serde(skip)]`, so a deserialized server sees
+//! only `y_body` and must re-derive them to reach the fully-NTT dispatch. The
+//! derivation must be byte-identical to what the client computed in-process.
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -27,10 +10,7 @@ use raven_inspire::params::InspireParams;
 use raven_inspire::rlwe::RlweSecretKey;
 
 fn test_params() -> InspireParams {
-    // Small-ring test params that exercise the same automorph +
-    // key-switching ladder as the SLO cell (ring_dim=2048, 128
-    // columns) but at ring_dim=256, 16 columns so the KAT runs fast
-    // under `cargo test --release`.
+    // same automorph and key-switch ladder as the production cell, smaller ring
     InspireParams {
         ring_dim: 256,
         q: 1_152_921_504_606_830_593,
@@ -47,10 +27,11 @@ fn test_params() -> InspireParams {
 fn ensure_server_derivatives_byte_identical_to_client_generation() {
     let params = test_params();
     let num_to_pack = 16;
-    let pack_params = PackParams::new(&params, num_to_pack);
+    let pack_params =
+        PackParams::try_new(&params, num_to_pack).expect("num_to_pack must be a legal width");
     let ctx = NttContext::with_moduli(params.ring_dim, params.moduli());
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let rlwe_sk = RlweSecretKey::generate(&params, &mut sampler);
     let w_seed = {
         let mut s = [0u8; 32];
@@ -59,13 +40,10 @@ fn ensure_server_derivatives_byte_identical_to_client_generation() {
         s
     };
 
-    // Baseline: client generates full keys in-process. y_all + y_all_ntt
-    // are populated in this object.
-    let mut sampler_b = GaussianSampler::new(params.sigma);
+    let mut sampler_b = GaussianSampler::with_seed(params.sigma, 0);
     let expected = ClientPackingKeys::generate(&rlwe_sk, &pack_params, w_seed, &mut sampler_b);
 
-    // Simulate wire-format: create a keys object carrying only y_body
-    // + z_body + metadata (empty y_all + y_all_ntt + y_bar_all + y_bar_all_ntt).
+    // what survives the wire: y_body + z_body + metadata only
     let mut wire_side = ClientPackingKeys {
         y_body: expected.y_body.clone(),
         z_body: expected.z_body.clone(),
@@ -77,7 +55,6 @@ fn ensure_server_derivatives_byte_identical_to_client_generation() {
         num_to_pack: expected.num_to_pack,
     };
 
-    // Apply server-side derivation.
     wire_side.ensure_server_derivatives(&pack_params, &ctx);
 
     assert_eq!(
@@ -97,21 +74,17 @@ fn ensure_server_derivatives_byte_identical_to_client_generation() {
         .zip(expected.y_all.iter())
         .enumerate()
     {
-        assert_eq!(got.len(), want.len(), "y_all[{}] inner length mismatch", i);
+        assert_eq!(got.len(), want.len(), "y_all[{i}] inner length mismatch");
         for (k, (p_got, p_want)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(
                 p_got.coeffs(),
                 p_want.coeffs(),
-                "y_all[{}][{}] coeffs mismatch",
-                i,
-                k
+                "y_all[{i}][{k}] coeffs mismatch"
             );
             assert_eq!(
                 p_got.is_ntt(),
                 p_want.is_ntt(),
-                "y_all[{}][{}] is_ntt flag mismatch",
-                i,
-                k
+                "y_all[{i}][{k}] is_ntt flag mismatch"
             );
         }
     }
@@ -125,28 +98,18 @@ fn ensure_server_derivatives_byte_identical_to_client_generation() {
         assert_eq!(
             got.len(),
             want.len(),
-            "y_all_ntt[{}] inner length mismatch",
-            i
+            "y_all_ntt[{i}] inner length mismatch"
         );
         for (k, (p_got, p_want)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(
                 p_got.coeffs(),
                 p_want.coeffs(),
-                "y_all_ntt[{}][{}] coeffs mismatch",
-                i,
-                k
+                "y_all_ntt[{i}][{k}] coeffs mismatch"
             );
-            assert!(
-                p_got.is_ntt(),
-                "y_all_ntt[{}][{}] must be in NTT form",
-                i,
-                k
-            );
+            assert!(p_got.is_ntt(), "y_all_ntt[{i}][{k}] must be in NTT form");
             assert!(
                 p_want.is_ntt(),
-                "expected y_all_ntt[{}][{}] must be in NTT form",
-                i,
-                k
+                "expected y_all_ntt[{i}][{k}] must be in NTT form"
             );
         }
     }
@@ -156,10 +119,11 @@ fn ensure_server_derivatives_byte_identical_to_client_generation() {
 fn ensure_server_derivatives_is_noop_when_populated() {
     let params = test_params();
     let num_to_pack = 16;
-    let pack_params = PackParams::new(&params, num_to_pack);
+    let pack_params =
+        PackParams::try_new(&params, num_to_pack).expect("num_to_pack must be a legal width");
     let ctx = NttContext::with_moduli(params.ring_dim, params.moduli());
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let rlwe_sk = RlweSecretKey::generate(&params, &mut sampler);
     let mut keys = ClientPackingKeys::generate(&rlwe_sk, &pack_params, [7u8; 32], &mut sampler);
 
@@ -174,7 +138,6 @@ fn ensure_server_derivatives_is_noop_when_populated() {
         .map(|inner| inner.iter().map(|p| p.coeffs().to_vec()).collect())
         .collect();
 
-    // Second call must not mutate state.
     keys.ensure_server_derivatives(&pack_params, &ctx);
 
     for (i, inner) in keys.y_all.iter().enumerate() {
@@ -182,9 +145,7 @@ fn ensure_server_derivatives_is_noop_when_populated() {
             assert_eq!(
                 p.coeffs(),
                 y_all_snapshot[i][k].as_slice(),
-                "noop violated at y_all[{}][{}]",
-                i,
-                k
+                "noop violated at y_all[{i}][{k}]"
             );
         }
     }
@@ -193,9 +154,7 @@ fn ensure_server_derivatives_is_noop_when_populated() {
             assert_eq!(
                 p.coeffs(),
                 y_all_ntt_snapshot[i][k].as_slice(),
-                "noop violated at y_all_ntt[{}][{}]",
-                i,
-                k
+                "noop violated at y_all_ntt[{i}][{k}]"
             );
         }
     }
@@ -205,14 +164,14 @@ fn ensure_server_derivatives_is_noop_when_populated() {
 fn bincode_roundtrip_then_server_derive_matches_original_y_all_ntt() {
     let params = test_params();
     let num_to_pack = 16;
-    let pack_params = PackParams::new(&params, num_to_pack);
+    let pack_params =
+        PackParams::try_new(&params, num_to_pack).expect("num_to_pack must be a legal width");
     let ctx = NttContext::with_moduli(params.ring_dim, params.moduli());
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let rlwe_sk = RlweSecretKey::generate(&params, &mut sampler);
     let original = ClientPackingKeys::generate(&rlwe_sk, &pack_params, [42u8; 32], &mut sampler);
 
-    // Simulate wire transport.
     let bytes = bincode::serialize(&original).expect("bincode serialize");
     let mut wire: ClientPackingKeys = bincode::deserialize(&bytes).expect("bincode deserialize");
     assert!(wire.y_all.is_empty(), "serde(skip) drops y_all on the wire");
@@ -235,9 +194,7 @@ fn bincode_roundtrip_then_server_derive_matches_original_y_all_ntt() {
             assert_eq!(
                 pg.coeffs(),
                 pw.coeffs(),
-                "post-roundtrip y_all_ntt[{}][{}] mismatch",
-                i,
-                k
+                "post-roundtrip y_all_ntt[{i}][{k}] mismatch"
             );
         }
     }

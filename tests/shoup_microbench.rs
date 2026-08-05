@@ -1,13 +1,6 @@
-//! Microbenchmark: Shoup vs Montgomery NTT butterflies.
-//!
-//! Before committing to the invasive hot-path integration, measure the
-//! ISOLATED win on the core NTT operations. If Shoup at butterfly level
-//! is clearly faster than Montgomery here, the integration-cost/benefit
-//! calculus favors proceeding. If not, Shoup is wasted scope and we
-//! should pivot straight to IFMA52.
-//!
-//! Runs under `cargo test --release`. Gated behind `RAVEN_MICROBENCH=1`
-//! env var so it does not fire during the regular regression runs.
+//! Shoup against Montgomery NTT butterflies in isolation, to decide whether
+//! the hot-path integration is worth its cost. Runs only under
+//! `RAVEN_MICROBENCH=1` and `--release`.
 
 use raven_inspire::math::ntt::NttContext;
 
@@ -17,7 +10,6 @@ const N: usize = 2048;
 const ITERS: usize = 5_000;
 
 fn build_input(ctx: &NttContext, seed: u64) -> Vec<u64> {
-    // Pseudo-random values in [0, q). SplitMix64-derived; deterministic.
     let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let q = ctx.modulus();
     (0..N)
@@ -43,7 +35,6 @@ fn microbench_shoup_vs_montgomery_forward() {
 
     let ctx = NttContext::with_default_q(N);
 
-    // Warmup both paths.
     for s in 0..16u64 {
         let mut v = build_input(&ctx, s);
         ctx.forward(&mut v);
@@ -53,7 +44,6 @@ fn microbench_shoup_vs_montgomery_forward() {
         ctx.forward_shoup(&mut v);
     }
 
-    // Montgomery timing.
     let inputs: Vec<Vec<u64>> = (0..ITERS as u64).map(|s| build_input(&ctx, s)).collect();
     let t0 = Instant::now();
     for mut v in inputs.clone() {
@@ -62,7 +52,6 @@ fn microbench_shoup_vs_montgomery_forward() {
     }
     let mont_elapsed = t0.elapsed();
 
-    // Shoup timing (same inputs).
     let inputs: Vec<Vec<u64>> = (0..ITERS as u64).map(|s| build_input(&ctx, s)).collect();
     let t0 = Instant::now();
     for mut v in inputs {
@@ -90,7 +79,6 @@ fn microbench_shoup_vs_montgomery_inverse() {
 
     let ctx = NttContext::with_default_q(N);
 
-    // Warmup.
     for s in 0..16u64 {
         let mut v = build_input(&ctx, s);
         ctx.forward(&mut v);
@@ -102,7 +90,6 @@ fn microbench_shoup_vs_montgomery_inverse() {
         ctx.inverse_shoup(&mut v);
     }
 
-    // Montgomery inverse: pre-forward each input, then time inverse.
     let mont_inputs: Vec<Vec<u64>> = (0..ITERS as u64)
         .map(|s| {
             let mut v = build_input(&ctx, s);
@@ -117,7 +104,6 @@ fn microbench_shoup_vs_montgomery_inverse() {
     }
     let mont_elapsed = t0.elapsed();
 
-    // Shoup inverse.
     let shoup_inputs: Vec<Vec<u64>> = (0..ITERS as u64)
         .map(|s| {
             let mut v = build_input(&ctx, s);
@@ -151,9 +137,7 @@ fn microbench_shoup_pointwise_vs_montgomery() {
 
     let ctx = NttContext::with_default_q(N);
 
-    // Build NTT-domain operands for each path. Shoup path's b_shoup is
-    // precomputed ONCE outside the timing loop to model the realistic
-    // session-cached case (w_all_ntt).
+    // b_shoup precomputed outside the loop, matching the session-cached case
     let a_std: Vec<u64> = build_input(&ctx, 42);
     let b_std: Vec<u64> = build_input(&ctx, 7);
 
@@ -168,7 +152,6 @@ fn microbench_shoup_pointwise_vs_montgomery() {
     ctx.forward_shoup(&mut b_shoup_ntt);
     let b_shoup_twins = ctx.shoup_precompute_vec(&b_shoup_ntt);
 
-    // Warmup.
     let mut out_mont = vec![0u64; N];
     for _ in 0..100 {
         ctx.pointwise_mul(&a_mont, &b_mont, &mut out_mont);

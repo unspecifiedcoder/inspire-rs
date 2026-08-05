@@ -17,7 +17,7 @@
 //!
 //! let params = InspireParams::secure_128_d2048();
 //! let database = vec![0u8; 1024 * 32]; // 1024 entries of 32 bytes
-//! let mut sampler = GaussianSampler::new(params.sigma);
+//! let mut sampler = GaussianSampler::from_os_entropy(params.sigma)?;
 //!
 //! let (crs, encoded_db, sk) = setup(&params, &database, 32, &mut sampler)?;
 //! ```
@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::inspiring::{PackParams, PackingKeyBody};
 use crate::ks::{generate_automorphism_ks_matrix, KeySwitchingMatrix};
+use crate::math::gaussian::os_seeded_chacha;
 use crate::math::{GaussianSampler, Poly};
 use crate::params::{InspireParams, ShardConfig};
 use crate::rgsw::GadgetVector;
@@ -109,8 +110,38 @@ impl ServerCrs {
         Ok(())
     }
 
+    /// Reject a CRS whose params or packing width cannot drive the algebra.
+    ///
+    /// Width 0 offers tree packing only and is accepted. Params are checked
+    /// here because they arrive over the wire and reach `ntt_context`, which
+    /// asserts rather than returns.
+    pub fn validate(&self) -> Result<()> {
+        self.params
+            .validate()
+            .map_err(|e| pir_err!("ServerCrs carries invalid InspireParams: {e}"))?;
+        if self.inspiring_num_columns == 0 {
+            return Ok(());
+        }
+        PackParams::is_legal_width(self.params.ring_dim, self.inspiring_num_columns)
+            .then_some(())
+            .ok_or_else(|| {
+                pir_err!(
+                    "ServerCrs declares inspiring_num_columns {}, which is not a legal \
+                     InspiRING packing width at ring_dim {}; legal widths are {:?}",
+                    self.inspiring_num_columns,
+                    self.params.ring_dim,
+                    PackParams::legal_widths(self.params.ring_dim)
+                )
+            })
+    }
+
     /// Deserialize a [`to_versioned_bytes`](Self::to_versioned_bytes) blob,
     /// validating the version prefix first so a layout mismatch is a typed error.
+    ///
+    /// This is the single trust boundary where server-supplied bytes become a
+    /// `ServerCrs`, so [`validate`](Self::validate) runs here rather than at
+    /// each use site: every consumer downstream holds the invariant by
+    /// construction.
     pub fn from_versioned_bytes(bytes: &[u8]) -> Result<Self> {
         Self::check_magic(bytes)?;
         let body = bytes.get(Self::MAGIC.len()..).unwrap_or_default();
@@ -121,8 +152,10 @@ impl ServerCrs {
                 Self::DECODE_LIMIT_BYTES
             ));
         }
-        bincode::deserialize(body)
-            .map_err(|e| pir_err!("ServerCrs decode failed after version check: {e}"))
+        let crs: Self = bincode::deserialize(body)
+            .map_err(|e| pir_err!("ServerCrs decode failed after version check: {e}"))?;
+        crs.validate()?;
+        Ok(crs)
     }
 }
 
@@ -167,7 +200,7 @@ pub fn setup(
     entry_size: usize,
     sampler: &mut GaussianSampler,
 ) -> Result<(ServerCrs, EncodedDatabase, RlweSecretKey)> {
-    let mut rng = rand::thread_rng();
+    let mut rng = os_seeded_chacha("setup").map_err(|e| pir_err!("{}", e))?;
     setup_with_rng(params, database, entry_size, sampler, &mut rng)
 }
 
@@ -175,8 +208,8 @@ pub fn setup(
 ///
 /// Used by tests that need reproducible CRS bytes (seeded `ChaCha20Rng`)
 /// and by WASM clients that pre-seed a deterministic RNG. Native
-/// callers can keep using [`setup`], which delegates here with
-/// `rand::thread_rng()`.
+/// callers can keep using [`setup`], which delegates here with an
+/// OS-seeded `ChaCha20Rng`.
 pub fn setup_with_rng<R: rand::RngCore + rand::CryptoRng>(
     params: &InspireParams,
     database: &[u8],
@@ -185,6 +218,11 @@ pub fn setup_with_rng<R: rand::RngCore + rand::CryptoRng>(
     rng: &mut R,
 ) -> Result<(ServerCrs, EncodedDatabase, RlweSecretKey)> {
     params.validate().map_err(|e| pir_err!("{}", e))?;
+    if entry_size == 0 {
+        return Err(pir_err!(
+            "entry_size must be non-zero; it divides the database into records"
+        ));
+    }
 
     let d = params.ring_dim;
     let q = params.q;
@@ -212,15 +250,25 @@ pub fn setup_with_rng<R: rand::RngCore + rand::CryptoRng>(
         galois_keys.push(ks_matrix);
     }
 
-    // InspiRING canonical packing setup
-    // γ (num_to_pack) must match the actual number of columns being packed
-    // num_columns = ceil(entry_size_bytes * 8 / 16) = ceil(entry_size / 2)
-    // Each column is 16 bits (2 bytes) of the entry
-    let bytes_per_column = 2usize; // 16-bit columns
-    let num_columns = entry_size.div_ceil(bytes_per_column);
-    let num_columns = num_columns.max(1); // At least 1 column
+    // a column carries 16 bits of the entry, so the packing width is ceil(entry_size / 2)
+    let bytes_per_column = 2usize;
+    let num_columns = entry_size.div_ceil(bytes_per_column).max(1);
 
-    let inspiring_pack_params = PackParams::new(params, num_columns);
+    if !PackParams::is_legal_width(d, num_columns) {
+        let legal_entry_sizes: Vec<usize> = PackParams::legal_widths(d)
+            .into_iter()
+            .flat_map(|w| [2 * w - 1, 2 * w])
+            .collect();
+        return Err(pir_err!(
+            "entry_size {entry_size} bytes yields InspiRING width \
+             ceil({entry_size}/{bytes_per_column}) = {num_columns}, which is not a power of two \
+             in [1, {}] at ring_dim {d}; legal entry sizes are {legal_entry_sizes:?}",
+            d / 2
+        ));
+    }
+
+    let inspiring_pack_params =
+        PackParams::try_new(params, num_columns).map_err(|e| pir_err!("{e}"))?;
 
     // Generate random seeds for InspiRING (shared between client and server)
     let mut inspiring_w_seed = [0u8; 32];
@@ -289,7 +337,7 @@ mod tests {
     #[test]
     fn test_setup_produces_valid_crs() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim;
@@ -311,7 +359,7 @@ mod tests {
     #[test]
     fn test_setup_with_secret_key() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim;
@@ -346,7 +394,7 @@ mod tests {
             .collect();
 
         let run_once = |seed: u64| -> ([u8; 32], [u8; 32]) {
-            let mut sampler = GaussianSampler::new(params.sigma);
+            let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
             let mut rng = ChaCha20Rng::seed_from_u64(seed);
             let (crs, _, _) =
                 setup_with_rng(&params, &database, entry_size, &mut sampler, &mut rng).unwrap();
@@ -368,7 +416,7 @@ mod tests {
     #[test]
     fn test_setup_empty_database() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let database: Vec<u8> = vec![];

@@ -1,13 +1,7 @@
-//! Residue persistence round-trip for `ClientSession` (Raven-local fork addition).
-//!
-//! Proves three things at once:
-//! 1. `to_residue` -> serialize drops the >160 MiB resident automorph tables: the
-//!    serialized residue stays small (CRS + secret key + y_body only).
-//! 2. `from_residue` rehydrates WITHOUT rebuilding `pack_params` (left `None`).
-//! 3. a rehydrated session queries and the response decodes byte-identically to the
-//!    planted entry - so the server re-derives `y_all` from the persisted `y_body`
-//!    and the client never needs the automorph tables on the query path. This is the
-//!    correctness gate behind eliminating the per-load 160 MiB rebuild.
+//! A serialized `ClientSession` residue must carry only CRS, secret key and
+//! y_body, rehydrate without rebuilding `pack_params`, and still decode the
+//! planted entry - the server re-derives `y_all` from y_body, so the client
+//! never needs the multi-hundred-MiB automorph tables on the query path.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -55,9 +49,7 @@ fn residue_round_trip_rehydrated_session_decodes_without_pack_params() {
 
     let residue = session.to_residue();
     let bytes = bincode::serialize(&residue).expect("serialize residue");
-    // At d=256 there are no 160 MiB tables to begin with; the load-bearing proof
-    // is structural (pack_params omitted + y_all serde-skip), asserted on the
-    // rehydrated session below. This only guards that no table-shaped payload crept in.
+    // d=256 has no large tables; this only catches a table-shaped payload
     assert!(
         (bytes.len() as u64) < 2 * 1024 * 1024,
         "serialized residue is {} bytes; no automorph-table-shaped payload may persist",
@@ -173,7 +165,6 @@ fn crs_versioned_bytes_round_trip_and_magic_guard() {
     let decoded = ServerCrs::from_versioned_bytes(&versioned).expect("from_versioned_bytes");
     assert_eq!(decoded.ring_dim(), crs.ring_dim());
 
-    // a raw (unversioned) bincode blob must fail loud, not mis-decode silently
     let raw = bincode::serialize(&crs).expect("raw serialize");
     let err = ServerCrs::from_versioned_bytes(&raw)
         .expect_err("an unversioned blob must fail the magic check");
@@ -181,11 +172,9 @@ fn crs_versioned_bytes_round_trip_and_magic_guard() {
         err.to_string().contains("magic mismatch"),
         "expected a magic-mismatch error, got: {err}"
     );
-    // a too-short blob must fail the magic check, not panic
     assert!(ServerCrs::check_magic(&[0u8; 4]).is_err());
 
-    // the decode length cap rejects an oversized body (e.g. a stale pre-shrink CRS)
-    // before bincode allocates, with a typed error
+    // the length cap must reject before bincode allocates
     let mut oversize = ServerCrs::MAGIC.to_vec();
     oversize.resize(16 + ServerCrs::DECODE_LIMIT_BYTES + 1, 0);
     let err = ServerCrs::from_versioned_bytes(&oversize)
@@ -204,14 +193,14 @@ fn debug_redacts_secret_key_on_session_and_residue() {
     let mut sampler = GaussianSampler::with_seed(params.sigma, 19);
     let (crs, _encoded_db, rlwe_sk) = setup(&params, &db, entry_size, &mut sampler).expect("setup");
 
-    // the raw polynomial Debug exposes coefficients; the secret key + its containers must not
+    // Poly's Debug prints coefficients; the secret key must never reach it
     let poly_dbg = format!("{:?}", rlwe_sk.poly);
     assert!(
         poly_dbg.contains("Poly") || poly_dbg.contains("coeffs"),
         "precondition: the raw polynomial Debug exposes coefficients"
     );
 
-    let key_dbg = format!("{:?}", rlwe_sk);
+    let key_dbg = format!("{rlwe_sk:?}");
     let lwe_dbg = format!(
         "{:?}",
         raven_inspire::lwe::LweSecretKey::from_rlwe(&rlwe_sk)
@@ -221,7 +210,7 @@ fn debug_redacts_secret_key_on_session_and_residue() {
         "LweSecretKey Debug must not print coefficient material: {lwe_dbg}"
     );
     let session = ClientSession::new(crs, rlwe_sk, &mut sampler).expect("session");
-    let session_dbg = format!("{:?}", session);
+    let session_dbg = format!("{session:?}");
     let residue_dbg = format!("{:?}", session.to_residue());
 
     for (label, dbg) in [

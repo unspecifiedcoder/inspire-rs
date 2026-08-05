@@ -1,22 +1,10 @@
-//! LWE encryption and decryption.
-//!
-//! Implements LWE encryption, decryption, and homomorphic operations.
+//! LWE encryption, decryption, and homomorphic operations.
 
 use super::types::{LweCiphertext, LweSecretKey};
 use crate::math::{GaussianSampler, ModQ};
 
 impl LweSecretKey {
-    /// Generates a secret key by sampling from Gaussian distribution.
-    ///
-    /// # Arguments
-    ///
-    /// * `dim` - Dimension of the secret key vector
-    /// * `q` - Ciphertext modulus
-    /// * `sampler` - Gaussian sampler for generating small coefficients
-    ///
-    /// # Returns
-    ///
-    /// A new `LweSecretKey` with Gaussian-distributed coefficients.
+    /// Samples a secret key from the error distribution.
     pub fn generate(dim: usize, q: u64, sampler: &mut GaussianSampler) -> Self {
         let coeffs: Vec<u64> = (0..dim)
             .map(|_| {
@@ -28,28 +16,15 @@ impl LweSecretKey {
         Self { coeffs, dim, q }
     }
 
-    /// Create a secret key from existing coefficients
+    /// Wraps existing coefficients.
     pub fn from_coeffs(coeffs: Vec<u64>, q: u64) -> Self {
         let dim = coeffs.len();
         Self { coeffs, dim, q }
     }
 
-    /// Derive an LWE secret key from an RLWE secret key
+    /// Key that `sample_extract_coeff0` output decrypts under: `s\[0\]`, then `-s\[i\]`.
     ///
-    /// When extracting LWE ciphertexts from RLWE via sample_extract_coeff0(),
-    /// the resulting LWE ciphertext is encrypted under an LWE secret key
-    /// whose coefficients are derived from the RLWE secret polynomial.
-    ///
-    /// In R_q = Z_q\[X\]/(X^d + 1), the constant term of a(X)·s(X) is:
-    ///   coeff_0(a(X)·s(X)) = a_0·s_0 - Σ_{i=1}^{d-1} a_i·s_{d-i}
-    ///
-    /// The sample_extract_coeff0() produces:
-    ///   a_lwe\[0\] = a_0,
-    ///   a_lwe\[i\] = a_{d-i} for i > 0
-    ///
-    /// For <a_lwe, s_lwe> = coeff_0(a(X)·s(X)), we need:
-    ///   s_lwe\[0\] = s\[0\],
-    ///   s_lwe\[i\] = -s\[i\] for i > 0
+    /// The negacyclic wrap in `coeff_0(a*s)` puts a minus on every term but the first.
     pub fn from_rlwe(rlwe_sk: &crate::rlwe::RlweSecretKey) -> Self {
         let d = rlwe_sk.ring_dim();
         let q = rlwe_sk.modulus();
@@ -58,7 +33,6 @@ impl LweSecretKey {
         coeffs[0] = rlwe_sk.poly.coeff(0);
         for (i, coeff) in coeffs.iter_mut().enumerate().take(d).skip(1) {
             let s_i = rlwe_sk.poly.coeff(i);
-            // Represent -s_i mod q
             *coeff = if s_i == 0 { 0 } else { q - s_i };
         }
 
@@ -67,23 +41,12 @@ impl LweSecretKey {
 }
 
 impl LweCiphertext {
-    /// Encrypt a message using LWE
-    ///
-    /// Computes: b = -<a, s> + e + Δ·m
-    ///
-    /// # Arguments
-    /// * `sk` - Secret key
-    /// * `message` - Plaintext message in Z_p
-    /// * `delta` - Scaling factor Δ = ⌊q/p⌋
-    /// * `a` - Random vector in Z_q^d
-    /// * `error` - Error term sampled from Gaussian
+    /// `(a, -<a, s> + e + delta*m)`.
     pub fn encrypt(sk: &LweSecretKey, message: u64, delta: u64, a: Vec<u64>, error: i64) -> Self {
         let q = sk.q;
 
-        // Compute <a, s>
         let inner_product = inner_product_mod(&a, &sk.coeffs, q);
 
-        // b = -<a, s> + e + Δ·m
         let neg_inner = ModQ::negate(inner_product, q);
         let e_mod = ModQ::from_signed(error, q);
         let delta_m = ModQ::mul(delta, message, q);
@@ -93,10 +56,7 @@ impl LweCiphertext {
         Self { a, b, q }
     }
 
-    /// Encrypt using CRS (Common Reference String) randomness
-    ///
-    /// In the CRS model, the `a` vector is fixed and publicly known.
-    /// This enables query compression: client only sends `b` values.
+    /// [`Self::encrypt`] against a CRS-derived `a`, which need not be transmitted.
     pub fn encrypt_with_crs(
         sk: &LweSecretKey,
         message: u64,
@@ -107,26 +67,18 @@ impl LweCiphertext {
         Self::encrypt(sk, message, delta, crs_a.to_vec(), error)
     }
 
-    /// Decrypt ciphertext to recover message mod p
-    ///
-    /// Computes: m = round(p/q · (b + <a, s>)) mod p
+    /// `round((p/q) * (b + <a, s>)) mod p`.
     pub fn decrypt(&self, sk: &LweSecretKey, delta: u64, p: u64) -> u64 {
         let q = self.q;
 
-        // Compute <a, s>
         let inner_product = inner_product_mod(&self.a, &sk.coeffs, q);
 
-        // Compute b + <a, s> = e + Δ·m
         let noisy_message = ModQ::add(self.b, inner_product, q);
 
-        // Round to nearest multiple of Δ, then divide
-        // m = round((p/q) · noisy_message) mod p
         round_decode(noisy_message, q, p, delta)
     }
 
-    /// Homomorphic addition of two ciphertexts
-    ///
-    /// If ct1 encrypts m1 and ct2 encrypts m2, result encrypts m1 + m2
+    /// Componentwise sum, decrypting to `m1 + m2`.
     pub fn add(&self, other: &LweCiphertext) -> Self {
         debug_assert_eq!(self.q, other.q);
         debug_assert_eq!(self.a.len(), other.a.len());
@@ -144,9 +96,7 @@ impl LweCiphertext {
         Self { a, b, q }
     }
 
-    /// Homomorphic subtraction of two ciphertexts
-    ///
-    /// If ct1 encrypts m1 and ct2 encrypts m2, result encrypts m1 - m2
+    /// Componentwise difference, decrypting to `m1 - m2`.
     pub fn sub(&self, other: &LweCiphertext) -> Self {
         debug_assert_eq!(self.q, other.q);
         debug_assert_eq!(self.a.len(), other.a.len());
@@ -164,9 +114,7 @@ impl LweCiphertext {
         Self { a, b, q }
     }
 
-    /// Scalar multiplication
-    ///
-    /// If ct encrypts m, result encrypts scalar * m
+    /// Componentwise scalar product, decrypting to `scalar * m`.
     pub fn scalar_mul(&self, scalar: u64) -> Self {
         let q = self.q;
         let a: Vec<u64> = self.a.iter().map(|&x| ModQ::mul(x, scalar, q)).collect();
@@ -175,7 +123,7 @@ impl LweCiphertext {
         Self { a, b, q }
     }
 
-    /// Create a ciphertext encrypting zero (for testing/initialization)
+    /// All-zero ciphertext, decrypting to 0.
     pub fn zero(dim: usize, q: u64) -> Self {
         Self {
             a: vec![0; dim],
@@ -185,7 +133,6 @@ impl LweCiphertext {
     }
 }
 
-/// Compute inner product mod q
 fn inner_product_mod(a: &[u64], b: &[u64], q: u64) -> u64 {
     debug_assert_eq!(a.len(), b.len());
     a.iter()
@@ -193,17 +140,12 @@ fn inner_product_mod(a: &[u64], b: &[u64], q: u64) -> u64 {
         .fold(0u64, |acc, (&x, &y)| ModQ::add(acc, ModQ::mul(x, y, q), q))
 }
 
-/// Decode noisy message back to plaintext
-///
-/// Given noisy = e + Δ·m where |e| < Δ/2, recover m
+/// Recovers m from `noisy = e + delta*m`, requiring `|e| < delta/2`.
 fn round_decode(noisy: u64, q: u64, p: u64, _delta: u64) -> u64 {
-    // Compute round(p * noisy / q) mod p
-    // Use 128-bit arithmetic to avoid overflow
     let scaled = (noisy as u128) * (p as u128);
     let divided = scaled / (q as u128);
     let remainder = scaled % (q as u128);
 
-    // Round: if remainder >= q/2, round up
     let rounded = if remainder >= (q as u128) / 2 {
         divided + 1
     } else {
@@ -255,7 +197,7 @@ mod tests {
         for message in [0, 1, 100, 1000, P - 1] {
             let ct = LweCiphertext::encrypt(&sk, message, delta(), a.clone(), error);
             let decrypted = ct.decrypt(&sk, delta(), P);
-            assert_eq!(decrypted, message, "Failed for message {}", message);
+            assert_eq!(decrypted, message, "Failed for message {message}");
         }
     }
 
@@ -363,21 +305,17 @@ mod tests {
         let q = params.q;
         let delta_val = params.delta();
         let ctx = params.ntt_context();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
-        // Generate RLWE secret key
         let rlwe_sk = RlweSecretKey::generate(&params, &mut sampler);
 
-        // Derive LWE secret key
         let lwe_sk = LweSecretKey::from_rlwe(&rlwe_sk);
 
-        // Create a message in coeff 0 only
         let message = 12345u64;
         let mut msg_coeffs = vec![0u64; d];
         msg_coeffs[0] = message;
         let msg_poly = Poly::from_coeffs(msg_coeffs, q);
 
-        // Encrypt with RLWE
         let a = Poly::random(d, q);
         let error_coeffs: Vec<u64> = (0..d)
             .map(|_| ModQ::from_signed(sampler.sample(), q))
@@ -385,16 +323,13 @@ mod tests {
         let error = Poly::from_coeffs(error_coeffs, q);
         let rlwe_ct = RlweCiphertext::encrypt(&rlwe_sk, &msg_poly, delta_val, a, &error, &ctx);
 
-        // Extract LWE from coeff 0
         let lwe_ct = rlwe_ct.sample_extract_coeff0();
 
-        // Decrypt LWE
         let lwe_decrypted = lwe_ct.decrypt(&lwe_sk, delta_val, params.p);
 
         assert_eq!(
             lwe_decrypted, message,
-            "LWE decryption should match: got {}, expected {}",
-            lwe_decrypted, message
+            "LWE decryption should match: got {lwe_decrypted}, expected {message}"
         );
     }
 }

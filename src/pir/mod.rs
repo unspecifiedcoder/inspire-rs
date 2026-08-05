@@ -1,46 +1,4 @@
-//! InsPIRe PIR Protocol Implementation
-//!
-//! This module implements the InsPIRe PIR (Private Information Retrieval) protocol
-//! using RGSW encryption and homomorphic polynomial rotation.
-//!
-//! # Protocol Overview
-//!
-//! 1. **Setup**: Encode database as polynomials, generate CRS and secret key
-//! 2. **Query**: Client sends RGSW ciphertext encoding the inverse monomial X^(-k)
-//! 3. **Respond**: Server performs homomorphic rotation to move target to coefficient 0
-//! 4. **Extract**: Client decrypts RLWE response and reads coefficient 0
-//!
-//! # Key Features
-//!
-//! - Direct coefficient encoding with RGSW monomial rotation
-//! - Only 2 key-switching matrices (InspiRING)
-//! - CRS model for server-side preprocessing
-//!
-//! # Example
-//!
-//! ```ignore
-//! use raven_inspire::pir::{setup, query, respond, extract};
-//! use raven_inspire::params::InspireParams;
-//! use raven_inspire::math::GaussianSampler;
-//!
-//! let params = InspireParams::default();
-//! let database = vec![0u8; 1024 * 32]; // 1024 entries of 32 bytes each
-//! let entry_size = 32;
-//! let mut sampler = GaussianSampler::new(params.sigma);
-//!
-//! // Server setup (returns CRS, encoded DB, and secret key)
-//! let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler)?;
-//!
-//! // Client query (requires secret key)
-//! let target_index = 42u64;
-//! let (state, query) = query(&crs, target_index, &encoded_db.config, &rlwe_sk, &mut sampler)?;
-//!
-//! // Server response
-//! let response = respond(&crs, &encoded_db, &query)?;
-//!
-//! // Client extraction
-//! let entry = extract(&crs, &state, &response, entry_size)?;
-//! ```
+//! InsPIRe PIR: setup -> query -> respond -> extract, over RGSW monomial rotation.
 
 mod encode_db;
 mod error;

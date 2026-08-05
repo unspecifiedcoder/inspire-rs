@@ -94,7 +94,7 @@ async fn http_inspiring_requires_packing_keys() {
         })
         .collect();
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) =
         setup(&params, &database, entry_size, &mut sampler).expect("setup should succeed");
 
@@ -108,7 +108,6 @@ async fn http_inspiring_requires_packing_keys() {
     )
     .expect("query should succeed");
 
-    // Ensure we request InspiRING explicitly
     client_query.packing_mode = PackingMode::Inspiring;
 
     let app_state = Arc::new(AppState {
@@ -132,7 +131,6 @@ async fn http_inspiring_requires_packing_keys() {
     let base_url = format!("http://{}", addr);
     let client = reqwest::Client::new();
 
-    // Success path: packing keys included
     let ok_response = client
         .post(format!("{}/query", base_url))
         .json(&client_query)
@@ -149,7 +147,6 @@ async fn http_inspiring_requires_packing_keys() {
     let expected = &database[expected_start..expected_start + entry_size];
     assert_eq!(extracted.as_slice(), expected);
 
-    // Error path: missing packing keys
     let mut missing_keys_query = client_query.clone();
     missing_keys_query.inspiring_packing_keys = None;
 

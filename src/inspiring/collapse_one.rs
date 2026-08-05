@@ -1,7 +1,4 @@
-//! CollapseOne procedure for InspiRING
-//!
-//! Reduces the dimension of an intermediate ciphertext by 1 using key-switching.
-//! This is the core building block for the Collapse procedure.
+//! Dimension-reduction-by-one step underneath Collapse.
 
 use crate::ks::KeySwitchingMatrix;
 use crate::math::{NttContext, Poly};
@@ -9,27 +6,7 @@ use crate::params::InspireParams;
 use crate::rgsw::gadget_decompose as rgsw_gadget_decompose;
 use crate::rgsw::GadgetVector;
 
-/// CollapseOne: reduce dimension by 1 using key-switching
-///
-/// Input: (a, b) with a ∈ R_q^k where a = (a_0, ..., a_{k-1})
-/// Output: (a', b') with a' ∈ R_q^{k-1}
-///
-/// The key-switching matrix K_s allows us to "absorb" one component of a
-/// into b while maintaining the encryption relationship.
-///
-/// The correct key-switching algorithm (from ks/switch.rs):
-/// 1. Decompose a_{k-1} using gadget: g⁻¹(a) = [a₀, a₁, ..., a_{ℓ-1}]
-/// 2. Compute: (a', b') = (0, b) + Σᵢ aᵢ · K\[i\]
-///    - MUST use BOTH ks_row.a and ks_row.b for each row
-///
-/// # Arguments
-/// * `a` - Vector of k polynomials
-/// * `b` - Single polynomial
-/// * `ks_matrix` - Key-switching matrix for the k-th component
-/// * `params` - System parameters
-///
-/// # Returns
-/// Tuple of (a', b') where a' has k-1 polynomials
+/// Absorb a_{k-1} into b via key-switching, returning a' of length k-1.
 pub fn collapse_one(
     a: &[Poly],
     b: &Poly,
@@ -45,25 +22,17 @@ pub fn collapse_one(
     let gadget = GadgetVector::new(params.gadget_base, params.gadget_len, q);
 
     if k == 1 {
-        // Base case: collapsing from 1 to 0 means fully absorbing into b
         let (result_a, new_b) = key_switch_component(&a[0], b, ks_matrix, &ctx, &gadget);
-        // Consistency: only include result_a if non-zero (matches k > 1 case)
         if result_a.is_zero() {
             return (vec![], new_b);
         }
         return (vec![result_a], new_b);
     }
 
-    // Key-switch the last component a_{k-1}
     let a_last = &a[k - 1];
-
-    // Gadget decomposition of a_last
     let decomposed = rgsw_gadget_decompose(a_last, &gadget);
 
-    // Apply key-switching using BOTH ks_row.a and ks_row.b
-    // This is the correct algorithm from ks/switch.rs:
-    //   (a', b') = (0, b) + Σᵢ decomposed_i · K[i]
-    // where K[i] = (ks_row.a, ks_row.b)
+    // (a', b') = (0, b) + sum_i decomposed_i * K[i]; both K rows are load-bearing.
     let mut result_a = Poly::zero_moduli(d, params.moduli());
     let mut result_b = b.clone();
 
@@ -71,35 +40,27 @@ pub fn collapse_one(
         if i < ks_matrix.len() {
             let ks_row = ks_matrix.get_row(i);
 
-            // digit_poly · K[i].a
             let term_a = digit_poly.mul_ntt(&ks_row.a, &ctx);
             result_a = &result_a + &term_a;
 
-            // digit_poly · K[i].b
             let term_b = digit_poly.mul_ntt(&ks_row.b, &ctx);
             result_b = &result_b + &term_b;
         }
     }
 
-    // The remaining a components stay, plus the new key-switched a component
     let mut new_a: Vec<Poly> = a[..k - 1].to_vec();
-    // Add the result_a from key-switching (this replaces the absorbed component)
     if !result_a.is_zero() {
-        // If we already have a[0], add result_a to it
-        if !new_a.is_empty() {
-            new_a[0] = &new_a[0] + &result_a;
-        } else {
+        if new_a.is_empty() {
             new_a.push(result_a);
+        } else {
+            new_a[0] = &new_a[0] + &result_a;
         }
     }
 
     (new_a, result_b)
 }
 
-/// Apply key-switching to fully absorb a single a component
-///
-/// Returns (new_a, new_b) where the key-switching result is properly computed
-/// using BOTH ks_row.a and ks_row.b
+/// Fully absorb one a component; both K rows are load-bearing.
 fn key_switch_component(
     a_component: &Poly,
     b: &Poly,
@@ -111,20 +72,16 @@ fn key_switch_component(
 
     let decomposed = rgsw_gadget_decompose(a_component, gadget);
 
-    // Initialize: (a', b') = (0, b)
     let mut result_a = Poly::zero_moduli(d, a_component.moduli());
     let mut result_b = b.clone();
 
-    // Accumulate: Σᵢ decomposed_i · K[i]
     for (i, digit_poly) in decomposed.iter().enumerate() {
         if i < ks_matrix.len() {
             let ks_row = ks_matrix.get_row(i);
 
-            // digit_poly · K[i].a
             let term_a = digit_poly.mul_ntt(&ks_row.a, ctx);
             result_a = &result_a + &term_a;
 
-            // digit_poly · K[i].b
             let term_b = digit_poly.mul_ntt(&ks_row.b, ctx);
             result_b = &result_b + &term_b;
         }
@@ -133,13 +90,8 @@ fn key_switch_component(
     (result_a, result_b)
 }
 
-/// Gadget decomposition of a polynomial
-///
-/// Decomposes each coefficient into base-z digits:
-/// a = sum_{i=0}^{l-1} a_i * z^i
-///
-/// Returns l polynomials where the i-th polynomial contains the i-th digit
-/// of each coefficient.
+/// Split each coefficient into base-z digits; result i holds digit i of every
+/// coefficient.
 #[allow(dead_code)]
 pub fn gadget_decompose(poly: &Poly, params: &InspireParams) -> Vec<Poly> {
     let gadget = GadgetVector::new(params.gadget_base, params.gadget_len, params.q);
@@ -170,7 +122,6 @@ mod tests {
         let decomposed = gadget_decompose(&poly, &params);
         assert_eq!(decomposed.len(), params.gadget_len);
 
-        // Verify decomposition produces valid output
         for digit_poly in &decomposed {
             assert_eq!(digit_poly.dimension(), params.ring_dim);
         }
@@ -188,7 +139,6 @@ mod tests {
             .collect();
         let b = random_poly(&mut rng, params.ring_dim, params.q, moduli);
 
-        // Create a dummy key-switching matrix
         let ks_matrix =
             KeySwitchingMatrix::dummy(params.ring_dim, params.moduli(), params.gadget_len);
 

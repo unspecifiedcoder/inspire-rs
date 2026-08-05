@@ -1,6 +1,9 @@
-//! Integration tests for Ethereum-style data formats
-//!
-//! Tests PIR with Ethereum account and storage entry structures.
+//! PIR over fixed-width account and storage record shapes.
+
+#![allow(
+    clippy::unwrap_used,
+    reason = "test-target fixture helpers; an abort here is the failure report"
+)]
 
 use raven_inspire::math::GaussianSampler;
 use raven_inspire::params::{InspireParams, SecurityLevel};
@@ -51,7 +54,7 @@ fn test_account_entry_format() {
 
     let num_entries = 3;
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     for target_idx in 0..num_entries {
@@ -67,7 +70,7 @@ fn test_account_entry_format() {
         let result = extract(&crs, &state, &response, entry_size).unwrap();
 
         let expected = &database[target_idx * entry_size..(target_idx + 1) * entry_size];
-        assert_eq!(result, expected, "Account field {} mismatch", target_idx);
+        assert_eq!(result, expected, "Account field {target_idx} mismatch");
     }
 }
 
@@ -86,7 +89,7 @@ fn test_storage_entry_format() {
         database[i * entry_size..(i + 1) * entry_size].copy_from_slice(&storage_value);
     }
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let target_idx = 7;
@@ -102,7 +105,7 @@ fn test_storage_entry_format() {
     let result = extract(&crs, &state, &response, entry_size).unwrap();
 
     let expected = &database[target_idx * entry_size..(target_idx + 1) * entry_size];
-    assert_eq!(result, expected, "Storage entry {} mismatch", target_idx);
+    assert_eq!(result, expected, "Storage entry {target_idx} mismatch");
 }
 
 #[test]
@@ -121,7 +124,7 @@ fn test_consecutive_account_words() {
         database.extend_from_slice(field);
     }
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let mut retrieved_fields = Vec::new();
@@ -141,8 +144,7 @@ fn test_consecutive_account_words() {
         assert_eq!(
             retrieved.as_slice(),
             original,
-            "Consecutive word {} mismatch",
-            idx
+            "Consecutive word {idx} mismatch"
         );
     }
 }
@@ -168,7 +170,7 @@ fn test_realistic_ethereum_values() {
         database.extend_from_slice(value);
     }
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     for (target_idx, realistic_value) in realistic_values.iter().enumerate() {
@@ -186,8 +188,7 @@ fn test_realistic_ethereum_values() {
         assert_eq!(
             result.as_slice(),
             realistic_value,
-            "Realistic value {} mismatch",
-            target_idx
+            "Realistic value {target_idx} mismatch"
         );
     }
 }

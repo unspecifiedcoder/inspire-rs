@@ -1,29 +1,17 @@
-//! End-to-end production-cell bench for the AVX-512-IFMA52 packing-
-//! offline dispatch.
-//!
-//! Drives `respond_seeded_inspiring_cached_with_session` (the locked
-//! production variant) against the production cell shapes:
-//!
-//! - 65 536 entries × 512 B (T2 / T3 cell).
-//! - 131 072 entries × 32 B (T1 cell, scaled).
-//!
-//! Measurement: 3-seed median (sort + middle, NOT mean). The sister
-//! crate / harness conditions are matched to the shipping
-//! `INSPIRE_PRODUCTION_VARIANT_BENCH.md` methodology so the numbers
-//! are comparable.
-//!
-//! Gating: `RAVEN_PACKING_OFFLINE_SIMD_BENCH=1` to opt into the
-//! workload (the cell setup is multi-second per seed and would
-//! otherwise dominate `cargo test` runtime).
-//!
-//! Skips on non-x86_64 hosts and on hosts lacking AVX-512-IFMA52
-//! when the `simd-packing-offline` feature is enabled (since the
-//! dispatch falls through to scalar there and the run would just
-//! re-measure the scalar path under a misleading label).
-//!
-//! Output: per-call wall-time per seed + 3-seed median + total
-//! speedup factor (set via env var across two cargo invocations,
-//! one with and one without the feature flag).
+//! Production-cell bench for the AVX-512-IFMA52 packing-offline dispatch.
+//! Reports a 3-seed median, never a mean. Runs only under
+//! `RAVEN_PACKING_OFFLINE_SIMD_BENCH=1`, since setup costs seconds per seed,
+//! and skips where the dispatch would silently fall back to scalar.
+
+#![allow(
+    clippy::expect_used,
+    reason = "test-target fixture helpers; an abort here is the failure report"
+)]
+#![allow(
+    clippy::used_underscore_binding,
+    clippy::needless_pass_by_value,
+    reason = "bench fixture plumbing"
+)]
 
 use std::time::Instant;
 
@@ -34,12 +22,8 @@ use raven_inspire::{
     ServerInspiringCache, ServerSessionStore,
 };
 
-/// Number of warm-up calls before timing begins.
 const WARMUP_CALLS: usize = 2;
-/// Number of timed calls per seed (median over these locks against
-/// per-call jitter).
 const TIMED_CALLS: usize = 5;
-/// Three independent RNG seeds drive the locked methodology.
 const SEEDS: [u64; 3] = [0x5EED_0001, 0x5EED_0002, 0x5EED_0003];
 
 fn median_of(mut samples: Vec<u128>) -> u128 {
@@ -60,16 +44,11 @@ fn drive_one_cell(label: &str, entries: usize, entry_bytes: usize, params: Inspi
         }
     );
 
-    // Per-seed median wall-time across TIMED_CALLS responder invocations.
     let mut per_seed_medians: Vec<u128> = Vec::with_capacity(SEEDS.len());
 
     for &seed in &SEEDS {
         let mut sampler = GaussianSampler::with_seed(params.sigma, seed);
 
-        // Synthetic database: deterministic, byte-recoverable; the
-        // decoded byte semantics aren't asserted here (correctness is
-        // covered by the KAT + existing e2e tests). Bench measures
-        // server wall-time only.
         let db: Vec<u8> = (0..entries * entry_bytes)
             .map(|i| ((i.wrapping_mul(0x9E37_79B9) >> 8) & 0xFF) as u8)
             .collect();
@@ -88,16 +67,13 @@ fn drive_one_cell(label: &str, entries: usize, entry_bytes: usize, params: Inspi
             .expect("register must succeed")
             .expect("inspiring session must register a handle");
 
-        // Pre-build a query at a representative index. The same query
-        // is replayed across warmup + timed iterations to isolate
-        // server-side wall-time from query construction noise.
+        // one query replayed, so query construction stays out of the measurement
         let target_idx = entries / 2 - 1;
         let (_state, mut query) = session
             .query_seeded(target_idx as u64, &encoded_db.config, &mut sampler)
             .expect("query_seeded must succeed");
         query.packing_mode = PackingMode::Inspiring;
 
-        // Warmup: not measured; populates branch predictors + page-cache.
         for _ in 0..WARMUP_CALLS {
             let _r = respond_seeded_inspiring_cached_with_session(
                 &crs,
@@ -110,7 +86,6 @@ fn drive_one_cell(label: &str, entries: usize, entry_bytes: usize, params: Inspi
             std::hint::black_box(&_r);
         }
 
-        // Timed loop: per-call wall in nanoseconds.
         let mut per_call_ns: Vec<u128> = Vec::with_capacity(TIMED_CALLS);
         for _ in 0..TIMED_CALLS {
             let t0 = Instant::now();
@@ -165,7 +140,7 @@ fn should_run() -> bool {
     true
 }
 
-/// Production cell A: 65 536 entries × 512 B (T2 / T3 shape).
+/// Production cell: 65536 entries x 512 B.
 #[test]
 #[ignore = "production cell bench; gated by RAVEN_PACKING_OFFLINE_SIMD_BENCH=1"]
 fn bench_prod_cell_65536x512() {
@@ -178,7 +153,7 @@ fn bench_prod_cell_65536x512() {
     drive_one_cell("prod-cell-65536x512", 65_536, 512, params);
 }
 
-/// Production cell B: 131 072 entries × 32 B (T1 shape, scaled).
+/// Production cell: 131072 entries x 32 B.
 #[test]
 #[ignore = "production cell bench; gated by RAVEN_PACKING_OFFLINE_SIMD_BENCH=1"]
 fn bench_prod_cell_131072x32() {

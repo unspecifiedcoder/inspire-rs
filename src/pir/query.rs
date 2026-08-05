@@ -1,12 +1,5 @@
-//! PIR Query: Client query generation
-//!
-//! Implements PIR.Query(crs, idx) → (state, query)
-//!
-//! # Query Mechanism
-//!
-//! The database polynomial h(X) stores values as coefficients: h(X) = Σ y_k · X^k
-//! To retrieve y_k, the client encrypts the inverse monomial X^(-k).
-//! When the server multiplies h(X) · RGSW(X^(-k)), the result has y_k at coefficient 0.
+//! PIR.Query encrypts X^(-local_index); the server's multiply by h(X) then lands the
+//! target value in coefficient 0.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,21 +11,20 @@ use crate::rgsw::{GadgetVector, RgswCiphertext, SeededRgswCiphertext};
 use crate::rlwe::RlweSecretKey;
 
 use super::encode_db::inverse_monomial;
-use super::error::Result;
+use super::error::{pir_err, Result};
 use super::setup::ServerCrs;
 
 /// Packing algorithm selection for server responses.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PackingMode {
-    /// Default: require InspiRING packing keys (fast path).
+    /// InspiRING packing, which requires client packing keys.
     #[default]
     Inspiring,
-    /// Explicitly request tree packing (slower, log(d) matrices).
+    /// Tree packing: slower, log(d) matrices.
     Tree,
 }
 
-/// Build a seeded query using a specific gadget vector.
 fn seeded_query_with_gadget(
     crs: &ServerCrs,
     global_index: u64,
@@ -60,7 +52,7 @@ fn seeded_query_with_gadget(
         local_index,
     };
 
-    let inspiring_packing_keys = maybe_generate_packing_keys(crs, rlwe_sk, sampler);
+    let inspiring_packing_keys = maybe_generate_packing_keys(crs, rlwe_sk, sampler)?;
     let packing_mode = if inspiring_packing_keys.is_some() {
         PackingMode::Inspiring
     } else {
@@ -78,107 +70,74 @@ fn seeded_query_with_gadget(
     Ok((state, query))
 }
 
-/// Client state for extracting response
+/// Secrets and query metadata needed to decrypt a response.
 ///
-/// Contains secret keys and query metadata needed to decrypt the server's response.
-///
-/// # Security Note
-///
-/// The `secret_key` and `rlwe_secret_key` fields are marked with `#[serde(skip)]`
-/// to prevent accidental serialization over the network. When this struct is
-/// deserialized, those fields will be set to `Default` (empty/zero), making the
-/// state unusable for decryption. Only the index metadata will be preserved.
-///
-/// For local storage of secret keys, serialize the `RlweSecretKey` directly
-/// to a separate file.
+/// Both key fields are `#[serde(skip)]` so a serialized state can never carry key
+/// material; a round-tripped state decodes them as zero and cannot decrypt.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClientState {
-    /// LWE secret key (derived from RLWE key) - NOT serialized
+    /// LWE secret key derived from the RLWE key.
     #[serde(skip, default)]
     pub secret_key: LweSecretKey,
-    /// RLWE secret key for decrypting packed response - NOT serialized
+    /// RLWE secret key for decrypting the packed response.
     #[serde(skip, default)]
     pub rlwe_secret_key: RlweSecretKey,
-    /// Queried index (global)
+    /// Global index queried.
     pub index: u64,
-    /// Shard containing the queried entry
+    /// Shard holding the entry.
     pub shard_id: u32,
-    /// Index within the shard
+    /// Index within the shard.
     pub local_index: u64,
 }
 
-/// Opaque server-session identifier returned by
-/// [`crate::pir::ServerSessionStore::register`] after a client uploads its
-/// InspiRING packing keys once at session setup. Subsequent queries reference
-/// the handle instead of inlining the keys, closing the ~48 KiB per-query
-/// overhead that `inspiring_packing_keys` contributed under the pre-handshake
-/// wire format.
-///
-/// The integer is monotonically allocated and has no cryptographic meaning;
-/// security comes from the fact that uploading new keys creates a new handle
-/// and the server authorizes reads from its own map. Handles are NOT
-/// session secrets and MAY be logged.
+/// Reference to packing keys already uploaded via
+/// [`crate::pir::ServerSessionStore::register`], so queries need not inline ~48 KiB
+/// of keys. Monotonically allocated, carries no secret, and MAY be logged.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ServerSessionHandle(pub u64);
 
-/// Client query sent to server
+/// Query sent to the server.
 ///
-/// Contains encrypted index information for PIR retrieval.
-///
-/// **Privacy caveat**: `shard_id` is sent in cleartext, reducing the anonymity
-/// set from the full database to a single shard. See PRIVACY.md for details.
+/// Privacy caveat: `shard_id` travels in cleartext, so the anonymity set is one
+/// shard rather than the whole database. See PRIVACY.md.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClientQuery {
-    /// Target shard ID (sent unencrypted — reveals which shard the entry is in)
+    /// Target shard, unencrypted.
     pub shard_id: u32,
-    /// RGSW ciphertext of evaluation point for polynomial evaluation
+    /// RGSW-encrypted inverse monomial.
     pub rgsw_ciphertext: RgswCiphertext,
-    /// Packing algorithm selection (default: InspiRING).
+    /// Packing algorithm the server should use.
     #[serde(default)]
     pub packing_mode: PackingMode,
-    /// InspiRING client packing keys (optional, for InspiRING packing).
-    /// Contains `y_body` derived from the client's secret key and shared seeds.
-    /// Mutually exclusive with `session_handle` in the handshake-aware path:
-    /// if a handle is set, the keys are resolved server-side from
-    /// [`crate::pir::ServerSessionStore`] and this field MUST be `None` so the
-    /// wire format stays compact.
+    /// Inline InspiRING packing keys; MUST be `None` when `session_handle` is set.
     #[serde(default)]
     pub inspiring_packing_keys: Option<ClientPackingKeys>,
-    /// Handshake extension: when the client has pre-uploaded its
-    /// `inspiring_packing_keys` to the server and received an opaque
-    /// session handle in return, subsequent queries reference the handle
-    /// here instead of inlining the keys. Fallback path: `None` +
-    /// `inspiring_packing_keys = Some(...)` preserves the pre-handshake
-    /// behavior for clients that haven't adopted the handshake yet.
+    /// Reference to pre-uploaded packing keys; `None` falls back to inlining them.
     #[serde(default)]
     pub session_handle: Option<ServerSessionHandle>,
 }
 
-/// Seeded client query for network transmission
-///
-/// Uses seed expansion to reduce query size by ~50%.
-/// Server expands seeds before processing.
+/// `ClientQuery` carrying seeds in place of the `a` polynomials, roughly halving
+/// query bytes; the server expands before processing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SeededClientQuery {
-    /// Target shard ID
+    /// Target shard, unencrypted.
     pub shard_id: u32,
-    /// Seeded RGSW ciphertext (stores seeds instead of full `a` polynomials)
+    /// Seeds standing in for the RGSW `a` polynomials.
     pub rgsw_ciphertext: SeededRgswCiphertext,
-    /// Packing algorithm selection (default: InspiRING).
+    /// Packing algorithm the server should use.
     #[serde(default)]
     pub packing_mode: PackingMode,
-    /// InspiRING client packing keys (optional, for InspiRING packing)
+    /// Inline InspiRING packing keys; MUST be `None` when `session_handle` is set.
     #[serde(default)]
     pub inspiring_packing_keys: Option<ClientPackingKeys>,
-    /// Handshake handle; see [`ClientQuery::session_handle`] for semantics.
+    /// Reference to pre-uploaded packing keys; see [`ClientQuery::session_handle`].
     #[serde(default)]
     pub session_handle: Option<ServerSessionHandle>,
 }
 
 impl SeededClientQuery {
-    /// Expand to full ClientQuery by regenerating `a` polynomials from seeds
-    ///
-    /// Note: This preserves InspiRING packing keys when provided.
+    /// Regenerate the `a` polynomials from their seeds.
     pub fn expand(&self) -> ClientQuery {
         ClientQuery {
             shard_id: self.shard_id,
@@ -194,37 +153,22 @@ fn maybe_generate_packing_keys(
     crs: &ServerCrs,
     rlwe_sk: &RlweSecretKey,
     sampler: &mut GaussianSampler,
-) -> Option<ClientPackingKeys> {
+) -> Result<Option<ClientPackingKeys>> {
     if crs.inspiring_num_columns == 0 {
-        return None;
+        return Ok(None);
     }
 
-    let pack_params = PackParams::new(&crs.params, crs.inspiring_num_columns);
-    Some(ClientPackingKeys::generate(
+    let pack_params = PackParams::try_new(&crs.params, crs.inspiring_num_columns)
+        .map_err(|e| pir_err!("CRS carries an unusable InspiRING width: {e}"))?;
+    Ok(Some(ClientPackingKeys::generate(
         rlwe_sk,
         &pack_params,
         crs.inspiring_w_seed,
         sampler,
-    ))
+    )))
 }
 
-/// PIR.Query(crs, idx, sk) → (state, query)
-///
-/// Generates a PIR query for the given index.
-///
-/// The query encrypts the inverse monomial X^(-local_index), which when multiplied
-/// with the database polynomial h(X), rotates the target value to coefficient 0.
-///
-/// # Arguments
-/// * `crs` - Common reference string (public parameters)
-/// * `global_index` - Index of the entry to retrieve
-/// * `shard_config` - Database shard configuration
-/// * `rlwe_sk` - RLWE secret key (kept separate from public CRS)
-/// * `sampler` - Gaussian sampler for encryption
-///
-/// # Returns
-/// * `ClientState` - Client-side state for response extraction
-/// * `ClientQuery` - Query to send to server
+/// Build a query for `global_index` plus the client state needed to extract it.
 pub fn query(
     crs: &ServerCrs,
     global_index: u64,
@@ -252,8 +196,7 @@ pub fn query(
         local_index,
     };
 
-    // Generate InspiRING client packing keys if server supports it
-    let inspiring_packing_keys = maybe_generate_packing_keys(crs, rlwe_sk, sampler);
+    let inspiring_packing_keys = maybe_generate_packing_keys(crs, rlwe_sk, sampler)?;
     let packing_mode = if inspiring_packing_keys.is_some() {
         PackingMode::Inspiring
     } else {
@@ -271,21 +214,7 @@ pub fn query(
     Ok((state, query))
 }
 
-/// PIR.Query with seed expansion for reduced bandwidth
-///
-/// Same as `query()` but returns a SeededClientQuery that's ~50% smaller.
-/// Server must call `expand()` before processing.
-///
-/// # Arguments
-/// * `crs` - Common reference string (public parameters)
-/// * `global_index` - Index of the entry to retrieve
-/// * `shard_config` - Database shard configuration
-/// * `rlwe_sk` - RLWE secret key (kept separate from public CRS)
-/// * `sampler` - Gaussian sampler for encryption
-///
-/// # Returns
-/// * `ClientState` - Client-side state for response extraction
-/// * `SeededClientQuery` - Compact query to send to server
+/// `query` in the compact seeded form; the server must `expand()` before processing.
 pub fn query_seeded(
     crs: &ServerCrs,
     global_index: u64,
@@ -303,8 +232,6 @@ pub fn query_seeded(
     )
 }
 
-/// Convert RLWE secret key to LWE secret key
-///
 /// The LWE key is the coefficient vector of the RLWE key polynomial.
 fn rlwe_to_lwe_key(rlwe_sk: &RlweSecretKey) -> LweSecretKey {
     let d = rlwe_sk.ring_dim();
@@ -337,7 +264,7 @@ mod tests {
     #[test]
     fn test_query_generates_valid_output() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim;
@@ -365,7 +292,7 @@ mod tests {
     #[test]
     fn test_query_shard_assignment() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim * 2;
@@ -394,7 +321,7 @@ mod tests {
     #[test]
     fn test_rlwe_to_lwe_key_conversion() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let rlwe_sk = RlweSecretKey::generate(&params, &mut sampler);
         let lwe_sk = rlwe_to_lwe_key(&rlwe_sk);
@@ -406,7 +333,6 @@ mod tests {
 
     #[test]
     fn test_query_size_comparison() {
-        // Use production parameters for realistic size comparison
         let params = crate::params::InspireParams {
             ring_dim: 2048,
             q: 1152921504606830593,
@@ -417,7 +343,7 @@ mod tests {
             gadget_len: 3,
             security_level: crate::params::SecurityLevel::Bits128,
         };
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim;
@@ -430,7 +356,6 @@ mod tests {
 
         let target_index = 42u64;
 
-        // Generate both query types
         let (_, full_query) = query(
             &crs,
             target_index,
@@ -448,7 +373,6 @@ mod tests {
         )
         .unwrap();
 
-        // Serialize and compare sizes
         let full_size = bincode::serialize(&full_query).unwrap().len();
         let seeded_size = bincode::serialize(&seeded_query).unwrap().len();
 
@@ -472,7 +396,6 @@ mod tests {
             100.0 * (1.0 - seeded_size as f64 / full_size as f64)
         );
 
-        // Assertions
         assert!(
             seeded_size < full_size,
             "Seeded should be smaller than full"

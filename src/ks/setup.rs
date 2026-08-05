@@ -1,90 +1,65 @@
 //! Key-switching matrix generation.
-//!
-//! Provides functions for generating key-switching matrices used in
-//! RLWE ciphertext transformations.
 
 use crate::math::{GaussianSampler, NttContext, Poly};
 use crate::rgsw::GadgetVector;
 use crate::rlwe::{RlweCiphertext, RlweSecretKey};
 use serde::{Deserialize, Serialize};
 
-/// Samples a polynomial with coefficients from discrete Gaussian.
 fn sample_error_poly(dim: usize, moduli: &[u64], sampler: &mut GaussianSampler) -> Poly {
     Poly::sample_gaussian_moduli(dim, moduli, sampler)
 }
 
-/// Key-switching matrix from secret key s to secret key s'.
-///
-/// The matrix consists of ℓ RLWE ciphertexts encrypting s·z^i under s':
-///
-/// ```text
-/// K[i] = RLWE_{s'}(s·z^i) = (a_i, -a_i·s' + e_i + s·z^i)
-/// ```
-///
-/// This allows transforming ciphertexts from key s to key s' with controlled noise.
-///
-/// # Fields
-///
-/// * `rows` - ℓ RLWE ciphertexts encoding scaled secret key
-/// * `gadget` - Gadget parameters for decomposition
-///
-/// # Example
-///
-/// ```ignore
-/// use raven_inspire::ks::{KeySwitchingMatrix, generate_ks_matrix};
-/// use raven_inspire::rgsw::GadgetVector;
-///
-/// let gadget = GadgetVector::new(1 << 20, 3, q);
-/// let ks_matrix = generate_ks_matrix(&from_key, &to_key, &gadget, &mut sampler, &ctx);
-/// ```
+/// Rows `K[i] = RLWE_{s'}(s * z^i)` carrying s from key s to key s'.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeySwitchingMatrix {
-    /// ℓ RLWE ciphertexts encoding scaled secret key.
+    /// One row per gadget power.
     pub rows: Vec<RlweCiphertext>,
-    /// Gadget parameters for decomposition.
+    /// Decomposition base and length.
     pub gadget: GadgetVector,
 }
 
 impl KeySwitchingMatrix {
-    /// Create from component rows
+    /// Pairs rows with the gadget they were built against.
     pub fn from_rows(rows: Vec<RlweCiphertext>, gadget: GadgetVector) -> Self {
-        debug_assert_eq!(rows.len(), gadget.len, "KS matrix must have ℓ rows");
+        debug_assert_eq!(
+            rows.len(),
+            gadget.len,
+            "KS matrix must have gadget.len rows"
+        );
         Self { rows, gadget }
     }
 
-    /// Get the ring dimension
+    /// Ring dimension d.
     pub fn ring_dim(&self) -> usize {
         self.rows[0].ring_dim()
     }
 
-    /// Get the modulus
+    /// Modulus q.
     pub fn modulus(&self) -> u64 {
         self.rows[0].modulus()
     }
 
-    /// Get the gadget length ℓ
+    /// Gadget length.
     pub fn gadget_len(&self) -> usize {
         self.gadget.len
     }
 
-    /// Get the number of rows (same as gadget length)
+    /// Row count, equal to the gadget length.
     pub fn len(&self) -> usize {
         self.rows.len()
     }
 
-    /// Check if the matrix is empty
+    /// True when there are no rows.
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
 
-    /// Get a reference to the i-th row
+    /// Row `i`.
     pub fn get_row(&self, i: usize) -> &RlweCiphertext {
         &self.rows[i]
     }
 
-    /// Create a dummy key-switching matrix for testing
-    ///
-    /// This creates a matrix with zero ciphertexts, useful for structural tests.
+    /// All-zero rows, for shape-only tests.
     pub fn dummy(ring_dim: usize, moduli: &[u64], gadget_len: usize) -> Self {
         let q = moduli.iter().product::<u64>();
         let gadget = GadgetVector::new(1 << 20, gadget_len, q);
@@ -99,22 +74,7 @@ impl KeySwitchingMatrix {
     }
 }
 
-/// Generate a key-switching matrix from secret key s to secret key s'
-///
-/// This creates ℓ RLWE encryptions of s·z^i under s':
-/// ```text
-/// K[i] = (a_i, -a_i·s' + e_i + s·z^i)
-/// ```
-///
-/// # Arguments
-/// * `from_key` - Source secret key s
-/// * `to_key` - Target secret key s'
-/// * `gadget` - Gadget vector parameters
-/// * `sampler` - Gaussian sampler for error
-/// * `ctx` - NTT context
-///
-/// # Returns
-/// Key-switching matrix that transforms ciphertexts from `from_key` to `to_key`
+/// Rows `K[i] = (a_i, -a_i*s' + e_i + s*z^i)` switching `from_key` to `to_key`.
 pub fn generate_ks_matrix(
     from_key: &RlweSecretKey,
     to_key: &RlweSecretKey,
@@ -147,20 +107,15 @@ pub fn generate_ks_matrix(
     );
 
     for &power in &powers[..ell] {
-        // Sample random a_i
         let a = Poly::random_moduli(d, moduli);
 
-        // Sample error e_i
         let error = sample_error_poly(d, moduli, sampler);
 
-        // Compute b_i = -a_i·s' + e_i + s·z^i
         let a_times_s_prime = a.mul_ntt(&to_key.poly, ctx);
         let neg_a_s_prime = -a_times_s_prime;
 
-        // s·z^i
         let s_scaled = from_key.poly.scalar_mul(power);
 
-        // b = -a·s' + e + s·z^i
         let b = &(&neg_a_s_prime + &error) + &s_scaled;
 
         rows.push(RlweCiphertext::from_parts(a, b));
@@ -172,20 +127,8 @@ pub fn generate_ks_matrix(
     }
 }
 
-/// Generate a key-switching matrix for LWE-to-RLWE packing
-///
-/// This creates a key-switching matrix that maps from an LWE secret key
-/// (embedded as an RLWE polynomial) to an RLWE secret key.
-///
-/// Used by InspiRING packing to convert LWE ciphertexts extracted via
-/// sample_extract_coeff0() back into valid RLWE ciphertexts.
-///
-/// # Arguments
-/// * `lwe_sk` - LWE secret key (whose coefficients match the negacyclic extraction pattern)
-/// * `rlwe_sk` - Target RLWE secret key
-/// * `gadget` - Gadget vector parameters
-/// * `sampler` - Gaussian sampler for error
-/// * `ctx` - NTT context
+/// [`generate_ks_matrix`] from an LWE key embedded as a polynomial to an RLWE key,
+/// undoing `sample_extract_coeff0` during packing.
 pub fn generate_packing_ks_matrix(
     lwe_sk: &crate::lwe::LweSecretKey,
     rlwe_sk: &RlweSecretKey,
@@ -210,17 +153,7 @@ pub fn generate_packing_ks_matrix(
     generate_ks_matrix(&lwe_as_rlwe, rlwe_sk, gadget, sampler, ctx)
 }
 
-/// Generate a key-switching matrix for automorphism
-///
-/// For Galois automorphism τ_g, creates a matrix from τ_g(s) to s.
-/// This is used to switch back after applying an automorphism to a ciphertext.
-///
-/// # Arguments
-/// * `sk` - Secret key s
-/// * `automorphism` - Galois element g (must be odd and coprime to 2d)
-/// * `gadget` - Gadget vector parameters
-/// * `sampler` - Gaussian sampler for error
-/// * `ctx` - NTT context
+/// [`generate_ks_matrix`] from `tau_g(s)` back to s; `g` MUST be odd and coprime to 2d.
 pub fn generate_automorphism_ks_matrix(
     sk: &RlweSecretKey,
     automorphism: usize,
@@ -231,8 +164,6 @@ pub fn generate_automorphism_ks_matrix(
     let d = sk.ring_dim();
     let q = sk.modulus();
 
-    // Compute τ_g(s): apply automorphism to secret key
-    // τ_g(X^i) = X^(g·i mod 2d), with sign flip if (g·i) mod 2d >= d
     let mut auto_s_coeffs = vec![0u64; d];
     for i in 0..d {
         let new_idx = (automorphism * i) % (2 * d);
@@ -241,7 +172,7 @@ pub fn generate_automorphism_ks_matrix(
         if new_idx < d {
             auto_s_coeffs[new_idx] = coeff;
         } else {
-            // X^(d+k) = -X^k in the ring X^d + 1
+            // X^(d+k) = -X^k.
             let reduced_idx = new_idx - d;
             auto_s_coeffs[reduced_idx] = if coeff == 0 { 0 } else { q - coeff };
         }
@@ -249,7 +180,6 @@ pub fn generate_automorphism_ks_matrix(
     let auto_s =
         RlweSecretKey::from_poly(Poly::from_coeffs_moduli(auto_s_coeffs, sk.poly.moduli()));
 
-    // Generate KS matrix from τ_g(s) to s
     generate_ks_matrix(&auto_s, sk, gadget, sampler, ctx)
 }
 
@@ -270,7 +200,7 @@ mod tests {
     fn test_ks_matrix_generation() {
         let params = test_params();
         let ctx = make_ctx(&params);
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let sk1 = RlweSecretKey::generate(&params, &mut sampler);
         let sk2 = RlweSecretKey::generate(&params, &mut sampler);
@@ -287,7 +217,7 @@ mod tests {
     fn test_ks_matrix_decryption() {
         let params = test_params();
         let ctx = make_ctx(&params);
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
         let delta = params.delta();
 
         let sk1 = RlweSecretKey::generate(&params, &mut sampler);
@@ -296,31 +226,23 @@ mod tests {
         let gadget = GadgetVector::new(params.gadget_base, params.gadget_len, params.q);
         let ks_matrix = generate_ks_matrix(&sk1, &sk2, &gadget, &mut sampler, &ctx);
 
-        // Each row K[i] should decrypt to s1·z^i under sk2
         let powers = gadget.powers();
         for (i, row) in ks_matrix.rows.iter().enumerate() {
-            // Decrypt row under sk2: a·s2 + b = e + s1·z^i
             let a_s2 = row.a.mul_ntt(&sk2.poly, &ctx);
             let decrypted = &a_s2 + &row.b;
 
-            // Expected: s1 * powers[i]
             let expected = sk1.poly.scalar_mul(powers[i]);
 
-            // Check that decrypted ≈ expected (up to small error)
             for j in 0..params.ring_dim {
                 let dec_val = decrypted.coeff(j);
                 let exp_val = expected.coeff(j);
 
-                // Compute difference in centered representation
                 let diff = dec_val.abs_diff(exp_val);
                 let centered_diff = std::cmp::min(diff, params.q - diff);
 
                 assert!(
                     centered_diff < delta / 10,
-                    "Row {} coefficient {} has large error: {}",
-                    i,
-                    j,
-                    centered_diff
+                    "Row {i} coefficient {j} has large error: {centered_diff}"
                 );
             }
         }
@@ -330,13 +252,12 @@ mod tests {
     fn test_automorphism_ks_matrix() {
         let params = test_params();
         let ctx = make_ctx(&params);
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let sk = RlweSecretKey::generate(&params, &mut sampler);
 
         let gadget = GadgetVector::new(params.gadget_base, params.gadget_len, params.q);
 
-        // Generate automorphism KS matrix for τ_3
         let auto_g = 3;
         let ks_matrix = generate_automorphism_ks_matrix(&sk, auto_g, &gadget, &mut sampler, &ctx);
 

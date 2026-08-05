@@ -1,51 +1,11 @@
-//! Spiral-style server-side response mod-switching.
+//! Spiral-style response mod-switching: every ciphertext coefficient becomes
+//! `c' = round(c * q' / q) mod q'`, dropping CRT limbs and so wire bytes. Follows the
+//! `(q1, q2, t)` triple in Spiral's `values.h`.
 //!
-//! Switches the response RLWE ciphertext from the encoding modulus
-//! `q` (typically the 2-CRT product `q ≈ 2^60`) down to a smaller
-//! single-prime modulus `q'`, producing a wire-byte reduction
-//! proportional to the CRT-limb count drop. Cited inspiration:
-//! Spiral's `values.h:71` parameter triple `(q1, q2, t)` for response
-//! mod-switching.
-//!
-//! # Algorithm
-//!
-//! For each coefficient `c ∈ Z_q` in the RLWE ciphertext (both the
-//! `a` and `b` polynomials):
-//!
-//!   c' = round(c · q' / q) mod q'
-//!
-//! After the switch the noise grows by approximately
-//! `d · |s|_max / 2` (worst-case rounding noise) plus the original
-//! noise scaled by `q'/q`. Decryption succeeds iff the post-switch
-//! noise stays under `q'/(2p)` (the mod-switched delta-half budget).
-//!
-//! # Wire-bytes win
-//!
-//! A 2-CRT polynomial serialized via bincode encodes
-//! `dim * crt_count = 2 * dim` u64 elements per Poly. A 1-CRT
-//! polynomial encodes `dim` u64 elements. The Inspiring response
-//! holds one `(a, b)` ciphertext pair, so the dominant wire payload
-//! halves when the response is mod-switched from 2-CRT down to a
-//! single 1-CRT polynomial pair.
-//!
-//! # Noise-budget gate
-//!
-//! [`check_mod_switch_noise_budget`] enforces a conservative bound
-//! before any switch is applied. The shipping production cell at
-//! `d=2048`, `p=65537`, source `q ≈ 2^60` (two 30-bit primes) and
-//! target `q' = DEFAULT_Q ≈ 2^60` (single 60-bit prime) preserves the
-//! modulus magnitude exactly (`q == q'` numerically), so the rounding
-//! noise term is zero and the budget is trivially satisfied. Operators
-//! that select a smaller `q'` for additional shrink (deferred to V2 +
-//! bit-packed serialization work) MUST verify the budget at the
-//! deployed parameter triple.
-//!
-//! # Sound vs. unsound switches
-//!
-//! A switch with `q' < q · (2 * p) / (d · |s|_max + 2 * old_noise)`
-//! breaks decryption silently. The gate fires on numerical violation;
-//! the [`mod_switch_response_checked`] entrypoint returns an error
-//! rather than producing a corrupted ciphertext.
+//! Too small a `q'` breaks decryption silently, so
+//! [`check_mod_switch_noise_budget`] gates the switch: post-switch noise must stay
+//! under `q'/(2p)`. Operators picking a smaller `q'` MUST re-verify at their own
+//! parameter triple.
 
 use serde::{Deserialize, Serialize};
 
@@ -58,67 +18,36 @@ use super::query::{ClientState, PackingMode};
 use super::respond::ServerResponse;
 use super::setup::InspireCrs;
 
-/// Conservative tail-bound multiplier on the secret-key infinity norm.
-///
-/// For a discrete Gaussian with `sigma <= 6.4`, taking `|s|_inf <= 7 * sigma`
-/// gives ~2^-32 tail probability per coefficient. The bound is
-/// intentionally tighter than statistical-average to keep the
-/// noise-budget gate worst-case sound under the `d` independent
-/// rounding samples that mod-switch introduces.
+/// `|s|_inf <= 7 * sigma` leaves ~2^-32 tail per coefficient, keeping the gate sound
+/// against all `d` rounding samples rather than the statistical average.
 const SECRET_KEY_TAIL_MULT: f64 = 7.0;
 
-/// Half-tail rounding error per coefficient under integer division.
-///
-/// The Spiral mod-switch round-to-nearest emits at most 0.5 per
-/// coefficient before being multiplied through by the secret. Each
-/// of `d` coefficient samples contributes at most this magnitude.
+/// Round-to-nearest error per coefficient.
 const ROUND_HALF: f64 = 0.5;
 
-/// NTT-friendly 45-bit prime suitable as a mod-switch target for
-/// `secure_128_d2048` (single-CRT q ≈ 2^60). Verified prime via
-/// Miller-Rabin with witnesses `{2,3,5,7,11,13,17,19,23,29,31,37}`
-/// (deterministic for n < 3.3e14). Satisfies `p ≡ 1 (mod 4096)` so
-/// admits length-2048 negacyclic NTT for client-side decryption.
-///
-/// Wire-byte profile vs unswitched 60-bit single-CRT response:
-/// `45 bits = 6 bytes_per_coeff` vs `60 bits = 8 bytes_per_coeff`,
-/// yielding a 25% per-coefficient wire reduction when paired with
-/// the [`encode_response_packed`] tight serializer. The bincode
-/// `Vec<u64>` baseline pads every coefficient to 8 bytes regardless
-/// of the actual modulus width, so the win materializes only with
-/// the packed encoder.
+/// 45-bit NTT-friendly prime (`== 1 mod 4096`, so length-2048 negacyclic NTT works).
+/// Six bytes per coefficient instead of eight, but only through
+/// [`encode_response_packed`] - bincode pads every coefficient to 8 bytes.
 pub const MOD_SWITCH_TARGET_45BIT: u64 = 35_184_372_060_161;
 
-/// NTT-friendly 33-bit prime offering a more aggressive wire
-/// reduction (5 bytes_per_coeff = 37.5% per-coefficient shrink) at
-/// a tighter post-switch noise margin. Operators MUST verify the
-/// noise budget against their concrete cell shape via
-/// [`check_mod_switch_noise_budget`] before deploying this target.
+/// 33-bit NTT-friendly prime: five bytes per coefficient at a tighter noise margin,
+/// so verify [`check_mod_switch_noise_budget`] against the deployed cell first.
 pub const MOD_SWITCH_TARGET_33BIT: u64 = 8_589_905_921;
 
-/// Mod-switch parameter triple equivalent to Spiral's `(q1, q2, t)`
-/// shape at `values.h:71` adapted for InsPIRe's `(q, q', p)` naming.
-///
-/// # Fields
-///
-/// * `source_modulus` - Original ciphertext modulus `q` (CRT product).
-/// * `target_modulus` - Post-switch modulus `q'`. Must satisfy
-///   `target_modulus <= source_modulus` and `target_modulus ≡ 1 (mod 2 * dim)`
-///   for the switched ciphertext to remain compatible with NTT-based
-///   client decryption.
-/// * `plaintext_modulus` - Plaintext modulus `p` reused from the
-///   source parameters; mod-switch does not change `p`.
+/// Spiral's `(q1, q2, t)` triple in InsPIRe's `(q, q', p)` naming.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct ModSwitchParams {
+    /// Pre-switch ciphertext modulus, the CRT product.
     pub source_modulus: u64,
+    /// Post-switch modulus; must be `<= source_modulus` and `== 1 mod 2*dim`.
     pub target_modulus: u64,
+    /// Plaintext modulus, unchanged by the switch.
     pub plaintext_modulus: u64,
 }
 
 impl ModSwitchParams {
-    /// Build a parameter triple from source `InspireParams` and a
-    /// requested `target_modulus`. Validates basic sanity (target <=
-    /// source, both > p, target NTT-friendly mod 2 * dim).
+    /// Build the triple, rejecting a target that widens, sits below `p`, or is not
+    /// NTT-friendly.
     pub fn new(source_params: &InspireParams, target_modulus: u64) -> Result<Self> {
         if target_modulus == 0 {
             return Err(pir_err!("mod-switch target_modulus must be positive"));
@@ -140,7 +69,7 @@ impl ModSwitchParams {
         let two_n = 2u64 * source_params.ring_dim as u64;
         if target_modulus % two_n != 1 {
             return Err(pir_err!(
-                "mod-switch target_modulus {} is not NTT-friendly: must satisfy q' ≡ 1 (mod 2*d) where d={}",
+                "mod-switch target_modulus {} is not NTT-friendly: must satisfy q' == 1 (mod 2*d) where d={}",
                 target_modulus,
                 source_params.ring_dim
             ));
@@ -153,20 +82,10 @@ impl ModSwitchParams {
     }
 }
 
-/// Verify that a mod-switch from `source_modulus` to `target_modulus`
-/// keeps the decryption noise under the post-switch budget
-/// `q'/(2p)`.
+/// Reject a switch whose worst-case post-switch noise reaches `q'/(2p)`.
 ///
-/// The bound combines:
-/// - Worst-case round-to-nearest noise: `d/2 * |s|_max`, where
-///   `|s|_max <= SECRET_KEY_TAIL_MULT * sigma` (tail-bounded
-///   Gaussian).
-/// - Scaled prior noise: `(q'/q) * old_noise_bound`. We bound
-///   `old_noise_bound` by `q/(4p)` (half the available pre-switch
-///   delta-budget) since shipping configs always have at least 1 bit
-///   of decryption slack.
-///
-/// Returns `Err` if the conservative bound exceeds `q'/(2p)`.
+/// Bounds rounding noise by `d/2 * |s|_max` and prior noise by `q/(4p)`, i.e. half the
+/// pre-switch budget, which every shipping config leaves free.
 pub fn check_mod_switch_noise_budget(params: &InspireParams, target_modulus: u64) -> Result<()> {
     let _triple = ModSwitchParams::new(params, target_modulus)?;
     let d = params.ring_dim as f64;
@@ -200,18 +119,8 @@ pub fn check_mod_switch_noise_budget(params: &InspireParams, target_modulus: u64
     Ok(())
 }
 
-/// Mod-switch a single RLWE polynomial.
-///
-/// For each coefficient `c` of `poly` (recomposed from any CRT
-/// representation), produces `c' = round(c * q' / q) mod q'` in a
-/// fresh single-modulus polynomial.
-///
-/// When `target_modulus == poly.modulus()`, the operation degenerates
-/// to a CRT-representation collapse with no arithmetic noise added.
-///
-/// # Errors
-/// Returns `Err` if `poly` is in NTT domain (must be in coefficient
-/// domain to recompose values cross-CRT).
+/// Rescale every coefficient into a fresh single-modulus polynomial. Coefficient
+/// domain only: recomposing across CRT limbs needs it.
 fn mod_switch_poly(poly: &Poly, target_modulus: u64) -> Result<Poly> {
     if poly.is_ntt() {
         return Err(pir_err!(
@@ -241,18 +150,7 @@ fn mod_switch_poly(poly: &Poly, target_modulus: u64) -> Result<Poly> {
     Ok(Poly::from_coeffs(out, target_modulus))
 }
 
-/// Mod-switch every RLWE ciphertext inside a `ServerResponse`.
-///
-/// Applies [`mod_switch_poly`] to the `a` and `b` polys of every
-/// ciphertext (the primary `ciphertext` plus any `column_ciphertexts`
-/// in non-Inspiring variants). The returned `ServerResponse` carries
-/// the same `packing_mode` discriminant so client extract dispatches
-/// correctly; the only structural difference is the smaller modulus
-/// on every internal `Poly`.
-///
-/// # Errors
-/// Returns `Err` if any internal poly is in NTT domain, or if the
-/// noise-budget gate fails for the requested switch.
+/// Mod-switch every ciphertext in a response, preserving `packing_mode`.
 pub fn mod_switch_response_checked(
     params: &InspireParams,
     response: &ServerResponse,
@@ -262,9 +160,7 @@ pub fn mod_switch_response_checked(
     mod_switch_response_inner(response, target_modulus)
 }
 
-/// Same as [`mod_switch_response_checked`] but skips the noise-budget
-/// gate. For benchmark + KAT use only; production callers must use
-/// the checked variant.
+/// [`mod_switch_response_checked`] without the noise gate; benchmarks and KATs only.
 pub fn mod_switch_response_unchecked(
     response: &ServerResponse,
     target_modulus: u64,
@@ -295,16 +191,8 @@ fn mod_switch_ciphertext(ct: &RlweCiphertext, target_modulus: u64) -> Result<Rlw
     Ok(RlweCiphertext::from_parts(new_a, new_b))
 }
 
-/// Mod-switch a secret key polynomial into the target modulus space.
-///
-/// Secrets are sampled small (Gaussian `sigma`) so their integer
-/// values are unchanged when re-interpreted under a different
-/// modulus, modulo the standard signed-vs-unsigned representation
-/// flip. Recomposes from CRT, then re-decomposes against
-/// `target_modulus`.
-///
-/// # Errors
-/// Returns `Err` if the secret-key polynomial is in NTT domain.
+/// Re-represent the secret under `target_modulus`. Secrets are small, so only the
+/// signed-vs-unsigned wrap point moves.
 fn mod_switch_secret_key(
     sk: &RlweSecretKey,
     target_modulus: u64,
@@ -334,15 +222,8 @@ fn mod_switch_secret_key(
     )))
 }
 
-/// Tight wire-encoding of a mod-switched [`ServerResponse`].
-///
-/// The Spiral wire-byte win materializes only when the post-switch
-/// modulus is paired with a coefficient-tight serialization that
-/// drops the per-coefficient `u64` padding bincode emits. This
-/// encoder packs each coefficient into the minimum whole-byte width
-/// `bytes_per_coeff = ceil(log2(target_modulus) / 8)`.
-///
-/// # Layout
+/// Serialize a mod-switched response at `ceil(log2(q')/8)` bytes per coefficient,
+/// which is where the wire win actually comes from - bincode pads each to 8.
 ///
 /// ```text
 ///   magic          : 4 bytes  ("RIMS")
@@ -351,18 +232,13 @@ fn mod_switch_secret_key(
 ///   ring_dim       : 4 bytes  (LE u32)
 ///   bytes_per_coeff: 1 byte
 ///   packing_mode   : 1 byte   (0 None / 1 Inspiring / 2 Tree)
-///   num_columns    : 4 bytes  (LE u32; column_ciphertexts.len())
+///   num_columns    : 4 bytes  (LE u32)
 ///   payload        : (2 + 2 * num_columns) * ring_dim * bytes_per_coeff
 /// ```
 ///
-/// The payload concatenates every Poly in the response (`a`, `b`,
-/// then each column ciphertext's `a`, `b`) coefficient-major in
-/// little-endian order, padded to `bytes_per_coeff` bytes.
-///
-/// # Errors
-/// Returns `Err` when any contained polynomial sits in NTT domain or
-/// has a multi-CRT representation (mod-switch must be applied before
-/// encoding so that every poly is single-CRT).
+/// Payload order is `a`, `b`, then each column ciphertext's `a`, `b`,
+/// coefficient-major little-endian. Every poly must already be single-CRT and in
+/// coefficient domain.
 pub fn encode_response_packed(response: &ServerResponse) -> Result<Vec<u8>> {
     let main_dim = response.ciphertext.ring_dim();
     let target_modulus = response.ciphertext.modulus();
@@ -378,7 +254,7 @@ pub fn encode_response_packed(response: &ServerResponse) -> Result<Vec<u8>> {
     }
 
     let bits = (64u32 - (target_modulus.saturating_sub(1)).leading_zeros()).max(1);
-    let bytes_per_coeff = ((bits + 7) / 8) as u8;
+    let bytes_per_coeff = bits.div_ceil(8) as u8;
 
     let pack_mode_byte: u8 = match response.packing_mode {
         None => 0,
@@ -425,9 +301,7 @@ pub fn encode_response_packed(response: &ServerResponse) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Inverse of [`encode_response_packed`]. Reconstructs a
-/// [`ServerResponse`] whose Polys are single-CRT under the encoded
-/// `target_modulus`.
+/// Inverse of [`encode_response_packed`].
 pub fn decode_response_packed(bytes: &[u8]) -> Result<ServerResponse> {
     if bytes.len() < 23 || &bytes[..4] != b"RIMS" {
         return Err(pir_err!(
@@ -494,9 +368,8 @@ pub fn decode_response_packed(bytes: &[u8]) -> Result<ServerResponse> {
         for (i, slot) in coeffs.iter_mut().enumerate() {
             let mut buf = [0u8; 8];
             let off = i * bytes_per_coeff as usize;
-            for j in 0..bytes_per_coeff as usize {
-                buf[j] = chunk[off + j];
-            }
+            let width = bytes_per_coeff as usize;
+            buf[..width].copy_from_slice(&chunk[off..off + width]);
             *slot = u64::from_le_bytes(buf);
         }
         Ok(Poly::from_coeffs(coeffs, target_modulus))
@@ -532,12 +405,9 @@ fn write_poly_packed(poly: &Poly, bytes_per_coeff: u8, out: &mut Vec<u8>) -> Res
     Ok(())
 }
 
-/// Decrypt + extract bytes from a mod-switched Inspiring response.
-///
-/// Mirrors [`crate::pir::extract_inspiring`] but reads `delta'` and
-/// the NTT context from the mod-switched modulus carried on the
-/// response polynomials, and rewrites the secret key into the
-/// target-modulus space before decryption.
+/// [`crate::pir::extract_inspiring`] against a mod-switched response: delta and the
+/// NTT context come from the response's own modulus, and the secret is re-represented
+/// there first.
 pub fn extract_inspiring_mod_switched(
     crs: &InspireCrs,
     state: &ClientState,
@@ -659,7 +529,7 @@ mod tests {
     #[test]
     fn inspiring_mod_switch_identity_roundtrip_recovers_entry() {
         let params = small_inspiring_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim;
@@ -749,7 +619,7 @@ mod tests {
     #[ignore = "production-cell mod-switch roundtrip is the bench's job; gated to keep unit-test wall time bounded"]
     fn production_45bit_mod_switch_roundtrip() {
         let params = production_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
         let entry_size = 32;
         let num_entries = params.ring_dim;
         let database: Vec<u8> = (0..(num_entries * entry_size))
@@ -794,9 +664,8 @@ mod tests {
         assert!(
             result.is_err(),
             "33-bit target sits on the conservative-gate boundary; the gate MUST reject \
-             it under the 7-sigma tail bound to preserve the M015 noise-budget floor. \
-             Operators that want this target must opt out of the gate explicitly via \
-             `mod_switch_response_unchecked` and accept the tighter noise margin: {result:?}"
+             it under the 7-sigma tail bound. Operators who want this target must opt \
+             out explicitly via `mod_switch_response_unchecked`: {result:?}"
         );
     }
 

@@ -1,17 +1,5 @@
-//! Fused mul_acc3 differential KAT.
-//!
-//! `Poly::mul_acc3_ntt_domain(a0, b0, a1, b1, a2, b2, ctx)` must
-//! produce byte-identical output to the three-step serial chain:
-//!
-//! ```text
-//!     self.mul_acc_ntt_domain(a0, b0, ctx)
-//!     self.mul_acc_ntt_domain(a1, b1, ctx)
-//!     self.mul_acc_ntt_domain(a2, b2, ctx)
-//! ```
-//!
-//! These tests exercise the byte-identity contract across random
-//! inputs at DEFAULT_Q single-prime and at 2-CRT, covering both
-//! the shipping config and the legacy 2-CRT path commit E restored.
+//! `mul_acc3_ntt_domain` must be byte-identical to three chained
+//! `mul_acc_ntt_domain` calls, at single-prime q and at 2-CRT.
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -23,7 +11,6 @@ const ITERS: usize = 32;
 
 fn random_poly_ntt(seed: u64, moduli: &[u64]) -> Poly {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
-    // Build per-limb coefficient slice whose entries are each < modulus.
     let mut coeffs = Vec::with_capacity(D * moduli.len());
     for &q in moduli {
         for _ in 0..D {
@@ -58,13 +45,11 @@ fn mul_acc3_matches_serial_chain_default_q() {
 
         let base = random_poly_ntt(seed * 10 + 6, &moduli);
 
-        // Serial path (reference).
         let mut serial = base.clone();
         serial.mul_acc_ntt_domain(&a0, &b0, &ctx);
         serial.mul_acc_ntt_domain(&a1, &b1, &ctx);
         serial.mul_acc_ntt_domain(&a2, &b2, &ctx);
 
-        // Fused path.
         let mut fused = base.clone();
         fused.mul_acc3_ntt_domain(&a0, &b0, &a1, &b1, &a2, &b2, &ctx);
 
@@ -74,7 +59,7 @@ fn mul_acc3_matches_serial_chain_default_q() {
 
 #[test]
 fn mul_acc3_matches_serial_chain_2crt_30bit() {
-    // Two NTT-friendly 30-bit primes, each ≡ 1 (mod 512) so D=256 works.
+    // both primes are 1 mod 512, so D=256 has a root of unity
     let moduli = [1_073_479_681u64, 1_073_692_673u64];
     let ctx = NttContext::with_moduli(D, &moduli);
 
@@ -102,11 +87,8 @@ fn mul_acc3_matches_serial_chain_2crt_30bit() {
 
 #[test]
 fn mul_acc3_accumulation_is_commutative_across_reorderings() {
-    // The fused kernel folds three independent products into one
-    // accumulator. Swapping the order of (a_i, b_i) pairs must produce
-    // byte-identical output — Montgomery products over R_q are
-    // associative and commutative; the fused path must not rely on any
-    // particular order.
+    // Montgomery products over R_q commute, so the fused accumulator must not
+    // depend on pair order.
     let moduli = [DEFAULT_Q];
     let ctx = NttContext::with_moduli(D, &moduli);
 

@@ -11,26 +11,62 @@
 name = "raven-inspire"
 version = "0.1.0-alpha.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Raven's fork of inspire-rs (igor53627) with Raven-local patches for known upstream issues and client-side query-path caching."
 license = "Apache-2.0"
 authors = ["Raven contributors", "Original inspire-rs authors (see UPSTREAM.md)"]
 publish = false
 readme = "README.md"
 
-# Lint posture: adapter code calls into ported upstream APIs. The upstream
-# code uses .unwrap() / panic! in several places; we relax these lints to
-# match upstream's posture rather than edit every call site. Raven-local
-# new code should still use typed errors.
+# AVX-512 / IFMA52 kernels are intrinsic-based and feature-gated.
 [lints.rust]
 unsafe_code = "allow"
 
 [lints.clippy]
-unwrap_used = "allow"
-expect_used = "allow"
-panic = "allow"
-pedantic = "allow"
-all = "allow"
+all = { level = "deny", priority = -2 }
+pedantic = { level = "deny", priority = -1 }
+
+# Runtime library paths must return typed errors. `clippy.toml` exempts test
+# code, so arming these costs no coverage.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+# Backticking every identifier in prose churns ~490 doc sites without changing
+# a single contract.
+doc_markdown = "allow"
+# No API here has an ignore-the-return footgun; #[must_use] on ~260 pure
+# accessors is noise.
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+# Modular arithmetic mixes u64/u128/i64/usize by design; every reduction step
+# is a deliberate width change, and ~480 per-site allows would bury the ones
+# that matter. Narrowing casts on index/size paths are checked instead - see
+# `ShardConfig::try_index_to_shard`.
+cast_lossless = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+# Symbol names track the papers this crate ports (a, b, e, s, q, u, y).
+similar_names = "allow"
+many_single_char_names = "allow"
+# Error and panic contracts are documented where they are load-bearing; the
+# blanket form would add ~100 doc blocks against the house comment budget.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Moduli and NTT constants read better in the grouping the source paper uses.
+unreadable_literal = "allow"
+unusual_byte_groupings = "allow"
+# NTT, packing and mod-switch kernels are long and wide by nature; splitting
+# them to satisfy a line or argument count would hide the dataflow.
+too_many_lines = "allow"
+too_many_arguments = "allow"
+# Helper fns declared next to their single use site read better than hoisted.
+items_after_statements = "allow"
+# The unsafe in this crate is AVX-512 intrinsics, reachable only through CPUID
+# dispatch and unrelated to any derived Deserialize.
+unsafe_derive_deserialize = "allow"
 
 [dependencies]
 tracing = "0.1"
@@ -47,6 +83,11 @@ rayon = { version = "1.10", optional = true }
 # Cryptographic primitives
 rand = "0.8"
 rand_chacha = "0.3"
+# Constant-time selects/compares. Default features deliberately: its barrier is
+# an out-of-line volatile read, which `core::hint::black_box` is not, and that is
+# what stops LLVM re-introducing a branch on a secret operand. Costs ~2x on the
+# Gaussian table scan and ~2% end to end.
+subtle = "2.6"
 
 # Hex encoding
 hex = "0.4"

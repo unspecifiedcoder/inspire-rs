@@ -1,32 +1,13 @@
-//! Homomorphic polynomial evaluation (legacy module)
-//!
-//! This module contains polynomial evaluation functions using Horner's method.
-//! These are currently NOT USED by the main PIR flow, which uses direct
-//! coefficient encoding with monomial rotation instead.
-//!
-//! The functions are kept for potential future use or alternative schemes
-//! that may require polynomial evaluation.
+//! Horner-method homomorphic polynomial evaluation, for schemes that need it. The
+//! shipping PIR flow uses direct coefficient encoding with monomial rotation instead,
+//! so nothing here is on a live path.
 
 use crate::math::{NttContext, Poly};
 use crate::params::InspireParams;
 use crate::rgsw::{external_product, GadgetVector, RgswCiphertext};
 use crate::rlwe::RlweCiphertext;
 
-/// Homomorphic polynomial evaluation using Horner's method
-///
-/// Evaluates h(Z) at encrypted point Z using RLWE-RGSW external products.
-///
-/// h(Z) = h_0 + h_1·Z + h_2·Z² + ... = h_0 + Z·(h_1 + Z·(h_2 + ...))
-///
-/// Each step computes: RLWE(acc) ⊡ RGSW(Z) + RLWE(h_i)
-///
-/// # Arguments
-/// * `poly_coeffs` - Plaintext polynomial h(Z) with coefficients [h_0, h_1, ..., h_{n-1}]
-/// * `encrypted_point` - RGSW encryption of the evaluation point Z
-/// * `params` - System parameters
-///
-/// # Returns
-/// RLWE ciphertext encrypting h(Z)
+/// Evaluate plaintext h at an RGSW-encrypted point via Horner and external products.
 #[allow(dead_code)]
 pub fn eval_poly_homomorphic(
     poly_coeffs: &Poly,
@@ -57,9 +38,7 @@ pub fn eval_poly_homomorphic(
     acc
 }
 
-/// Evaluate polynomial homomorphically with precomputed NTT context
-///
-/// Same as eval_poly_homomorphic but reuses an existing NTT context.
+/// `eval_poly_homomorphic` against a caller-owned NTT context.
 #[allow(dead_code)]
 pub fn eval_poly_homomorphic_with_ctx(
     poly_coeffs: &Poly,
@@ -89,7 +68,7 @@ pub fn eval_poly_homomorphic_with_ctx(
     acc
 }
 
-/// Find the degree of a polynomial (index of highest non-zero coefficient)
+/// Index of the highest non-zero coefficient.
 fn find_degree(poly: &Poly) -> usize {
     for i in (0..poly.len()).rev() {
         if poly.coeff(i) != 0 {
@@ -99,7 +78,7 @@ fn find_degree(poly: &Poly) -> usize {
     0
 }
 
-/// Create RLWE ciphertext encrypting a constant (as noiseless trivial encryption)
+/// Noiseless trivial encryption of a delta-scaled constant.
 fn encrypt_constant(value: u64, params: &InspireParams) -> RlweCiphertext {
     let d = params.ring_dim;
     let q = params.q;
@@ -113,7 +92,7 @@ fn encrypt_constant(value: u64, params: &InspireParams) -> RlweCiphertext {
     RlweCiphertext::from_parts(a, b)
 }
 
-/// Create RLWE ciphertext with pre-scaled constant (trivial encryption)
+/// Noiseless trivial encryption against a caller-supplied delta.
 fn encrypt_scaled_constant(value: u64, delta: u64, params: &InspireParams) -> RlweCiphertext {
     let d = params.ring_dim;
     let q = params.q;
@@ -126,27 +105,13 @@ fn encrypt_scaled_constant(value: u64, delta: u64, params: &InspireParams) -> Rl
     RlweCiphertext::from_parts(a, b)
 }
 
-/// Generate scalar evaluation points for polynomial evaluation
-///
-/// Returns the t-th roots of unity ω^k ∈ Z_q as scalar values.
-/// These match the roots used by `interpolate()` in encode_db.rs.
-///
-/// The root ω is found as the smallest generator g^((q-1)/t) that is
-/// a primitive t-th root of unity.
-///
-/// # Arguments
-/// * `t` - Number of evaluation points (must divide q-1)
-/// * `q` - Modulus
-///
-/// # Returns
-/// Vector of scalar roots of unity [1, ω, ω², ..., ω^(t-1)]
+/// The t-th roots of unity [1, omega, ..., omega^(t-1)] in Z_q; t must divide q-1.
 #[allow(dead_code)]
 pub fn generate_scalar_eval_points(t: usize, q: u64) -> Vec<u64> {
     if t == 0 {
         return vec![];
     }
 
-    // Find primitive t-th root of unity (same algorithm as in encode_db.rs)
     let omega = find_primitive_root(t, q);
 
     let mut points = Vec::with_capacity(t);
@@ -158,18 +123,18 @@ pub fn generate_scalar_eval_points(t: usize, q: u64) -> Vec<u64> {
     points
 }
 
-/// Create polynomial for scalar evaluation point z = ω^k (constant polynomial)
+/// Lift a scalar evaluation point into a constant polynomial.
 #[allow(dead_code)]
 pub fn scalar_eval_point_to_poly(value: u64, d: usize, moduli: &[u64]) -> Poly {
     let mut coeffs = vec![0u64; d];
-    coeffs[0] = value; // Constant polynomial
+    coeffs[0] = value;
     Poly::from_coeffs_moduli(coeffs, moduli)
 }
 
-/// Encrypt a scalar evaluation point as RGSW ciphertext
+/// RGSW-encrypt a scalar evaluation point.
 #[allow(dead_code)]
 pub fn encrypt_scalar_eval_point(
-    value: u64, // The scalar ω^k
+    value: u64,
     sk: &crate::rlwe::RlweSecretKey,
     gadget: &GadgetVector,
     sampler: &mut crate::math::GaussianSampler,
@@ -182,33 +147,29 @@ pub fn encrypt_scalar_eval_point(
     RgswCiphertext::encrypt(sk, &point_poly, gadget, sampler, ctx)
 }
 
-/// Find primitive n-th root of unity modulo q
+/// Primitive n-th root of unity mod q.
+#[allow(
+    clippy::panic,
+    reason = "module is entirely dead_code; no shipping PIR flow reaches it"
+)]
 fn find_primitive_root(n: usize, q: u64) -> u64 {
-    // Edge case: 1-st root is always 1
     if n == 1 {
         return 1;
     }
 
     assert!(
         (q - 1).is_multiple_of(n as u64),
-        "No {}-th root of unity exists mod {}",
-        n,
-        q
+        "No {n}-th root of unity exists mod {q}"
     );
 
     let exp = (q - 1) / n as u64;
 
-    // For prime q, small generators usually work
-    // Try first 1000 candidates (sufficient for cryptographic primes)
     for candidate in 2..1000.min(q) {
         let root = mod_pow(candidate, exp, q);
         if is_primitive_root(root, n, q) {
             return root;
         }
     }
-    // Legacy module (not used by shipping PIR flow; all functions
-    // `#[allow(dead_code)]`). Panic retained until this module is either
-    // deleted or converted to a Result-returning API.
     panic!("No primitive root found in first 1000 candidates (legacy eval_poly)");
 }
 
@@ -241,20 +202,8 @@ fn mod_pow(base: u64, exp: u64, modulus: u64) -> u64 {
     result as u64
 }
 
-/// Generate evaluation points (unit monomials ±X^k)
-///
-/// z_k = ω^k where ω = X^(2d/t) is a primitive t-th root of unity in R_q.
-///
-/// For the ring R_q = Z_q[X]/(X^d + 1):
-/// - X^d = -1, so X^(2d) = 1
-/// - Thus X^(2d/t) is a primitive t-th root of unity when t | 2d
-///
-/// # Arguments
-/// * `t` - Number of evaluation points (must divide 2d)
-/// * `d` - Ring dimension
-///
-/// # Returns
-/// Vector of pairs (coefficient_index, sign) representing z_k = ±X^index
+/// Evaluation points as (index, negate) pairs for z_k = +/-X^index; needs t | 2d,
+/// since X^(2d) = 1 in the negacyclic ring.
 #[deprecated(note = "Use generate_scalar_eval_points for correct NTT domain alignment")]
 #[allow(dead_code)]
 pub fn generate_monomial_eval_points(t: usize, d: usize) -> Vec<(usize, bool)> {
@@ -283,7 +232,6 @@ pub fn generate_monomial_eval_points(t: usize, d: usize) -> Vec<(usize, bool)> {
     points
 }
 
-/// Deprecated: Use generate_scalar_eval_points instead
 #[deprecated(note = "Use generate_scalar_eval_points for correct NTT domain alignment")]
 #[allow(deprecated)]
 #[allow(dead_code)]
@@ -291,13 +239,7 @@ pub fn generate_eval_points(t: usize, d: usize) -> Vec<(usize, bool)> {
     generate_monomial_eval_points(t, d)
 }
 
-/// Create polynomial for evaluation point z_k = ±X^index
-///
-/// # Arguments
-/// * `index` - Exponent in X^index
-/// * `negate` - If true, returns -X^index
-/// * `d` - Ring dimension
-/// * `q` - Modulus
+/// Monomial +/-X^index as a polynomial.
 #[deprecated(note = "Use scalar_eval_point_to_poly for correct NTT domain alignment")]
 #[allow(dead_code)]
 pub fn eval_point_to_poly(index: usize, negate: bool, d: usize, q: u64, moduli: &[u64]) -> Poly {
@@ -312,9 +254,7 @@ pub fn eval_point_to_poly(index: usize, negate: bool, d: usize, q: u64, moduli: 
     Poly::from_coeffs_moduli(coeffs, moduli)
 }
 
-/// Encrypt an evaluation point as RGSW ciphertext
-///
-/// This is used in the query phase to encrypt z_k = ±X^index.
+/// RGSW-encrypt the monomial evaluation point +/-X^index.
 #[deprecated(note = "Use encrypt_scalar_eval_point for correct NTT domain alignment")]
 #[allow(deprecated)]
 #[allow(dead_code)]
@@ -334,13 +274,7 @@ pub fn encrypt_eval_point(
     RgswCiphertext::encrypt(sk, &point_poly, gadget, sampler, ctx)
 }
 
-/// Homomorphic polynomial selection using binary expansion
-///
-/// Given polynomials [h_0, h_1, ..., h_{t-1}] and encrypted index bits,
-/// selects h_idx homomorphically.
-///
-/// Uses tree-based selection: at each level, use external product to
-/// select between pairs based on a bit.
+/// Select one of `polynomials` under encrypted index bits, one tree level per bit.
 #[allow(dead_code)]
 pub fn homomorphic_select(
     polynomials: &[Poly],
@@ -363,7 +297,7 @@ pub fn homomorphic_select(
         .map(|p| poly_to_rlwe(p, delta, params))
         .collect();
 
-    for bit_ct in index_bits.iter() {
+    for bit_ct in index_bits {
         if current.len() == 1 {
             break;
         }
@@ -390,7 +324,7 @@ pub fn homomorphic_select(
         .unwrap_or_else(|| RlweCiphertext::zero(params))
 }
 
-/// Convert plaintext polynomial to trivial RLWE encryption
+/// Trivial (noiseless) RLWE encryption of a plaintext polynomial.
 #[allow(dead_code)]
 fn poly_to_rlwe(poly: &Poly, delta: u64, params: &InspireParams) -> RlweCiphertext {
     let d = params.ring_dim;
@@ -429,7 +363,7 @@ mod tests {
 
         for t in [1, 2, 4, 8, 16, 32, 64, 128, 256] {
             let points = generate_scalar_eval_points(t, q);
-            assert_eq!(points.len(), t, "Wrong number of eval points for t={}", t);
+            assert_eq!(points.len(), t, "Wrong number of eval points for t={t}");
         }
     }
 
@@ -440,7 +374,7 @@ mod tests {
 
         let points = generate_scalar_eval_points(t, q);
 
-        assert_eq!(points[0], 1, "First eval point should be ω^0 = 1");
+        assert_eq!(points[0], 1, "First eval point should be omega^0 = 1");
     }
 
     #[test]
@@ -452,7 +386,7 @@ mod tests {
 
         for (k, &omega_k) in points.iter().enumerate() {
             let omega_k_to_t = mod_pow(omega_k, t as u64, q);
-            assert_eq!(omega_k_to_t, 1, "ω^{} raised to t={} should be 1", k, t);
+            assert_eq!(omega_k_to_t, 1, "omega^{k} raised to t={t} should be 1");
         }
     }
 
@@ -476,7 +410,7 @@ mod tests {
 
         for t in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512] {
             let points = generate_eval_points(t, d);
-            assert_eq!(points.len(), t, "Wrong number of eval points for t={}", t);
+            assert_eq!(points.len(), t, "Wrong number of eval points for t={t}");
         }
     }
 
@@ -558,7 +492,7 @@ mod tests {
     #[test]
     fn test_encrypt_constant_decrypts_correctly() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
         let ctx = params.ntt_context();
 
         let sk = RlweSecretKey::generate(&params, &mut sampler);
@@ -576,7 +510,7 @@ mod tests {
         let params = test_params();
         let d = params.ring_dim;
         let q = params.q;
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
         let ctx = params.ntt_context();
 
         let sk = RlweSecretKey::generate(&params, &mut sampler);

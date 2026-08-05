@@ -1,15 +1,5 @@
-//! IFMA52 Montgomery differential KAT.
-//!
-//! Verifies:
-//! - `mont_mul_split52` (scalar reference) is byte-identical to
-//!   inspire-rs's `to_mont` / `from_mont` round-trip across 10 000
-//!   random inputs.
-//! - `avx512_ifma::pointwise_mont_mul_x8` produces lane-identical
-//!   results to the scalar reference on AVX-512-IFMA-capable hardware;
-//!   auto-skips on hosts without the feature.
-//!
-//! Integration gate: no IFMA52 code lands in the hot path until this
-//! KAT is green. A failure here = invention broken = revert, pivot.
+//! IFMA52 Montgomery must be byte-identical to the scalar reference before any
+//! of it reaches the hot path. The SIMD case auto-skips without AVX-512-IFMA.
 
 use raven_inspire::math::ifma52::{ifma52_product_lohi, mont_mul_split52};
 use raven_inspire::math::mod_q::DEFAULT_Q;
@@ -18,10 +8,7 @@ use raven_inspire::math::ntt::NttContext;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-/// Reference Montgomery multiply via inspire-rs's NttContext: Mont-mul
-/// is the private `montgomery_mul_at`; we access via the round-trip
-/// `to_mont(a) * to_mont(b)` reduced. Simpler path: go through the
-/// scalar NTT's `pointwise_mul` with a single non-zero position.
+/// `montgomery_mul_at` is private, so reach it through a `to_mont` round-trip.
 fn ref_mont_mul(ctx: &NttContext, a: u64, b: u64) -> u64 {
     let a_mont = ctx.to_mont(a);
     let b_mont = ctx.to_mont(b);
@@ -101,17 +88,9 @@ fn mont_mul_split52_matches_ref_default_q() {
         let a = rng.gen_range(0..q);
         let b = rng.gen_range(0..q);
 
-        // Reference: Montgomery round-trip via NttContext.
         let expected = ref_mont_mul(&ctx, a, b);
 
-        // Candidate: mont_mul_split52 operates on plain operands,
-        // computing a * b * R^{-1} mod q directly. For it to produce
-        // the same "plain" a * b mod q, we feed in Montgomery-form a,
-        // Montgomery-form b, and interpret the output as Montgomery-
-        // form a*b. Or: feed plain a, plain b, and the output is
-        // a*b*R^{-1} mod q; one more mont_mul_split52 call with R^2
-        // lifts it back. Simpler check: verify the operator matches
-        // NttContext's `montgomery_mul_at` on Montgomery-form inputs.
+        // mont_mul_split52 computes a*b*R^-1, so feed Montgomery-form operands
         let a_mont = ctx.to_mont(a);
         let b_mont = ctx.to_mont(b);
         let candidate_mont_form = mont_mul_split52(a_mont, b_mont, q, q_inv_neg);
@@ -122,7 +101,6 @@ fn mont_mul_split52_matches_ref_default_q() {
             "mont_mul_split52 disagrees with reference: a={a} b={b} \
              candidate={candidate} expected={expected}"
         );
-        // Also verify against u128 naive.
         assert_eq!(candidate, naive_mul_mod(a, b, q));
     }
 }
@@ -169,29 +147,24 @@ fn ifma52_x8_matches_scalar_default_q() {
     let q_inv_neg = ctx.q_inv_neg_for_test(0);
     let mut rng = StdRng::seed_from_u64(0xCAFE_CAFE);
 
-    // Run 1024 batches of 8 lanes = 8192 paired inputs.
     let len = 8192usize;
     let a_std: Vec<u64> = (0..len).map(|_| rng.gen_range(0..q)).collect();
     let b_std: Vec<u64> = (0..len).map(|_| rng.gen_range(0..q)).collect();
 
-    // Montgomery-convert inputs.
     let a_mont: Vec<u64> = a_std.iter().map(|&a| ctx.to_mont(a)).collect();
     let b_mont: Vec<u64> = b_std.iter().map(|&b| ctx.to_mont(b)).collect();
 
-    // Scalar reference.
     let expected: Vec<u64> = a_mont
         .iter()
         .zip(b_mont.iter())
         .map(|(&am, &bm)| mont_mul_split52(am, bm, q, q_inv_neg))
         .collect();
 
-    // SIMD candidate.
     let mut candidate = vec![0u64; len];
     unsafe {
         pointwise_mont_mul_x8(&a_mont, &b_mont, &mut candidate, q, q_inv_neg);
     }
 
-    // Lane-by-lane comparison for diagnostic quality.
     for i in 0..len {
         assert_eq!(
             candidate[i], expected[i],
@@ -230,7 +203,6 @@ fn ifma52_x8_matches_naive_default_q() {
         pointwise_mont_mul_x8(&a_mont, &b_mont, &mut simd_out, q, q_inv_neg);
     }
 
-    // Strip Montgomery form; compare to naive a*b mod q.
     for i in 0..len {
         let got = ctx.from_mont(simd_out[i]);
         let want = naive_mul_mod(a_std[i], b_std[i], q);

@@ -1,12 +1,4 @@
-//! InsPIRe: Communication-Efficient PIR with Server-side Preprocessing
-//!
-//! This crate implements the InsPIRe PIR protocol from the paper:
-//! "InsPIRe: Communication-Efficient PIR with Server-side Preprocessing"
-//!
-//! Key components:
-//! - InspiRING: Novel ring packing algorithm (LWE → RLWE) using only 2 key-switching matrices
-//! - Homomorphic polynomial evaluation for reduced response size
-//! - CRS model for server-side preprocessing
+//! InsPIRe PIR, ported from eprint 2025/1352.
 
 pub mod cost;
 pub mod inspiring;

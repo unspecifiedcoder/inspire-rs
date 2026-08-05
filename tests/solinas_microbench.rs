@@ -1,16 +1,5 @@
-//! Solinas-Montgomery microbenchmark.
-//!
-//! Isolated-op measurement comparing four variants of pointwise
-//! modular multiplication at n=2048, DEFAULT_Q, Montgomery form:
-//!
-//! 1. Scalar classical Montgomery (inspire-rs baseline)
-//! 2. Scalar Solinas-Montgomery (new)
-//! 3. IFMA52 split-52 Montgomery
-//! 4. IFMA52 Solinas-Montgomery (new)
-//!
-//! Gate for primitive speedup: ≥ 1.3x.
-//!
-//! Gated behind `RAVEN_MICROBENCH=1` env var.
+//! Scalar and IFMA52 pointwise modular multiply, classical against Solinas, at
+//! n=2048 and DEFAULT_Q. Runs only under `RAVEN_MICROBENCH=1`.
 
 use raven_inspire::math::ifma52::avx512_ifma::pointwise_mont_mul_x8;
 use raven_inspire::math::mod_q::DEFAULT_Q;
@@ -53,8 +42,6 @@ fn microbench_solinas_pointwise_all_variants() {
     let q_inv_neg = ctx.q_inv_neg_for_test(0);
     let has_ifma = is_x86_feature_detected!("avx512ifma");
 
-    // Build NTT-Montgomery-form inputs (what the backward-recursion
-    // hot path actually sees).
     let mut a = build_input(&ctx, 11);
     ctx.forward(&mut a);
     let mut b = build_input(&ctx, 17);
@@ -65,7 +52,6 @@ fn microbench_solinas_pointwise_all_variants() {
     let mut out_sol_ifma = vec![0u64; N];
     let mut out_ifma52 = vec![0u64; N];
 
-    // --- Warmup all variants ---
     for _ in 0..100 {
         ctx.pointwise_mul(&a, &b, &mut out_mont);
         pointwise_solinas_mont_mul(&a, &b, &mut out_sol_scalar, q_inv_neg);
@@ -81,7 +67,6 @@ fn microbench_solinas_pointwise_all_variants() {
         }
     }
 
-    // --- Classical scalar Montgomery (baseline) ---
     let t0 = Instant::now();
     for _ in 0..ITERS {
         ctx.pointwise_mul(&a, &b, &mut out_mont);
@@ -89,7 +74,6 @@ fn microbench_solinas_pointwise_all_variants() {
     }
     let mont_ns = t0.elapsed().as_nanos() as f64 / ITERS as f64;
 
-    // --- Scalar Solinas-Montgomery ---
     let t0 = Instant::now();
     for _ in 0..ITERS {
         pointwise_solinas_mont_mul(&a, &b, &mut out_sol_scalar, q_inv_neg);
@@ -97,7 +81,6 @@ fn microbench_solinas_pointwise_all_variants() {
     }
     let sol_scalar_ns = t0.elapsed().as_nanos() as f64 / ITERS as f64;
 
-    // --- IFMA52 split-52 ---
     let ifma52_ns = if has_ifma {
         let t0 = Instant::now();
         for _ in 0..ITERS {
@@ -111,7 +94,6 @@ fn microbench_solinas_pointwise_all_variants() {
         f64::NAN
     };
 
-    // --- IFMA52 Solinas ---
     let sol_ifma_ns = if has_ifma {
         let t0 = Instant::now();
         for _ in 0..ITERS {
@@ -125,7 +107,6 @@ fn microbench_solinas_pointwise_all_variants() {
         f64::NAN
     };
 
-    // --- Report ---
     eprintln!("=== Pointwise mul, n={N}, {ITERS} iters, DEFAULT_Q ===");
     eprintln!(
         "  Scalar Montgomery (baseline): {mont_ns:>7.1} ns/call  ({:.3} μs)  1.000x",
@@ -158,7 +139,6 @@ fn microbench_solinas_pointwise_all_variants() {
         );
     }
 
-    // Correctness spot-check.
     assert_eq!(
         out_mont, out_sol_scalar,
         "scalar Solinas diverged from classical Montgomery"
@@ -180,13 +160,8 @@ fn microbench_solinas_forward_inverse_ntt() {
 
     let ctx = NttContext::with_default_q(N);
 
-    // Forward NTT: compares `forward` (Montgomery) vs `forward_solinas`.
-    // Both take standard-form input and leave output in NTT/Montgomery
-    // form. Solinas path uses the same Montgomery boundary conversion
-    // but calls solinas REDC inside each butterfly multiply.
     let iters = 5_000;
 
-    // Warmup.
     for s in 0..16u64 {
         let mut v = build_input(&ctx, s);
         ctx.forward(&mut v);
@@ -212,7 +187,6 @@ fn microbench_solinas_forward_inverse_ntt() {
     }
     let fwd_sol_ns = t0.elapsed().as_nanos() as f64 / iters as f64;
 
-    // Inverse NTT.
     let mont_inputs: Vec<Vec<u64>> = (0..iters as u64)
         .map(|s| {
             let mut v = build_input(&ctx, s);
@@ -261,7 +235,6 @@ fn microbench_solinas_forward_inverse_ntt() {
         inv_mont_ns / inv_sol_ns
     );
 
-    // Sanity: ensure Solinas path produces correct roundtrip results.
     let mut a = build_input(&ctx, 999);
     let original = a.clone();
     ctx.forward_solinas(&mut a);

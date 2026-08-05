@@ -1,13 +1,6 @@
-//! Simple RLWE coefficient packing
-//!
-//! A direct implementation of RLWE ciphertext packing that combines multiple
-//! RLWE ciphertexts (each with value in coefficient 0) into a single RLWE
-//! (with values in coefficients 0, 1, 2, ...).
-//!
-//! This is used for the OnePacking (InsPIRe^1) variant.
-//!
-//! NOTE: pack_rlwe_coeffs only works when each input RLWE has message ONLY in coeff 0.
-//! For PIR, where each RLWE contains the full rotated database, use pack_lwe_to_rlwe instead.
+//! Shift-and-add packing of RLWE ciphertexts that hold their message in coefficient 0
+//! ONLY. A PIR response ciphertext holds the whole rotated shard, so it must go through
+//! `pack_lwe_to_rlwe` instead.
 
 use crate::ks::KeySwitchingMatrix;
 use crate::lwe::LweCiphertext;
@@ -16,23 +9,7 @@ use crate::params::InspireParams;
 use crate::rgsw::{gadget_decompose, GadgetVector};
 use crate::rlwe::RlweCiphertext;
 
-/// Pack multiple RLWE ciphertexts into a single RLWE ciphertext
-///
-/// Each input RLWE ciphertext should have its message in coefficient 0.
-/// The output RLWE has message_k in coefficient k.
-///
-/// # Algorithm
-/// For each RLWE ciphertext at position i:
-/// 1. Multiply by X^i to move coefficient 0 to coefficient i
-/// 2. Add all shifted RLWEs together
-///
-/// # Arguments
-/// * `rlwe_ciphertexts` - RLWE ciphertexts, each with message in coeff 0
-/// * `params` - System parameters
-///
-/// # Returns
-/// A single RLWE ciphertext whose plaintext polynomial has
-/// the messages in coefficients 0, 1, ..., n-1
+/// Shift ciphertext i by X^i and sum, landing message i at coefficient i.
 pub fn pack_rlwe_coeffs(
     rlwe_ciphertexts: &[RlweCiphertext],
     params: &InspireParams,
@@ -64,19 +41,13 @@ pub fn pack_rlwe_coeffs(
     RlweCiphertext::from_parts(result_a, result_b)
 }
 
-/// Multiply an RLWE ciphertext by X^k (in the negacyclic ring)
-///
-/// This shifts all coefficients, placing the message from coefficient 0
-/// into coefficient k.
 fn mul_rlwe_by_monomial(ct: &RlweCiphertext, k: usize, q: u64) -> RlweCiphertext {
     let a_shifted = mul_poly_by_monomial(&ct.a, k, q);
     let b_shifted = mul_poly_by_monomial(&ct.b, k, q);
     RlweCiphertext::from_parts(a_shifted, b_shifted)
 }
 
-/// Multiply a polynomial by X^k in the negacyclic ring R_q = Z_q[X]/(X^d + 1)
-///
-/// X^d = -1, so coefficients that wrap around get negated.
+/// Multiply by X^k in R_q = Z_q[X]/(X^d + 1); wrapped coefficients get negated.
 fn mul_poly_by_monomial(poly: &Poly, k: usize, q: u64) -> Poly {
     let d = poly.dimension();
     let k = k % (2 * d);
@@ -124,18 +95,8 @@ fn mod_sub(a: u64, b: u64, q: u64) -> u64 {
     }
 }
 
-/// Pack extracted LWE values into a trivial RLWE ciphertext (b-only)
-///
-/// This creates a trivial RLWE ciphertext (a=0, b=values) that can be
-/// decrypted by any RLWE secret key. Used when we only need to pack
-/// the plaintext values, not maintain encryption under a specific key.
-///
-/// # Arguments
-/// * `lwe_ciphertexts` - LWE ciphertexts to pack (each encrypts a scalar)
-/// * `params` - System parameters
-///
-/// # Returns
-/// A trivial RLWE ciphertext with packed b values in coefficients 0, 1, 2, ...
+/// Collect the LWE b values into a trivial (a=0) RLWE ciphertext, which any RLWE key
+/// decrypts - it preserves no encryption under a specific key.
 #[allow(dead_code)]
 pub fn pack_lwe_trivial(
     lwe_ciphertexts: &[LweCiphertext],
@@ -151,7 +112,6 @@ pub fn pack_lwe_trivial(
         );
     }
 
-    // Just pack the b values at their respective coefficient positions
     let mut b_coeffs = vec![0u64; d];
     for (slot, lwe) in lwe_ciphertexts.iter().enumerate() {
         if slot < d {
@@ -159,28 +119,13 @@ pub fn pack_lwe_trivial(
         }
     }
 
-    // a = 0, b = packed values
     RlweCiphertext::from_parts(
         Poly::zero_moduli(d, moduli),
         Poly::from_coeffs_moduli(b_coeffs, moduli),
     )
 }
 
-/// Pack multiple LWE ciphertexts into a single RLWE ciphertext via key-switching
-///
-/// This correctly converts LWE ciphertexts (encrypted under s_lwe) to a single
-/// RLWE ciphertext (encrypted under s_rlwe) with values in coefficients 0, 1, 2, ...
-///
-/// # Algorithm
-/// For each LWE ciphertext at slot i:
-/// 1. Key-switch the LWE to RLWE using the packing matrix
-/// 2. Multiply by X^i to place message in coefficient i
-/// 3. Sum all results
-///
-/// # Arguments
-/// * `lwe_ciphertexts` - LWE ciphertexts to pack (each encrypts a scalar)
-/// * `ks_matrix` - Key-switching matrix from LWE key to RLWE key
-/// * `params` - System parameters
+/// Key-switch each LWE from s_lwe to s_rlwe, shift by X^i, and sum.
 pub fn pack_lwe_to_rlwe(
     lwe_ciphertexts: &[LweCiphertext],
     ks_matrix: &KeySwitchingMatrix,
@@ -201,17 +146,14 @@ pub fn pack_lwe_to_rlwe(
     let mut result_b = Poly::zero_moduli(d, params.moduli());
 
     for (slot, lwe) in lwe_ciphertexts.iter().enumerate() {
-        // Convert LWE to RLWE and key-switch
         let rlwe_switched = lwe_to_rlwe_keyswitch(lwe, ks_matrix, &ctx, params);
 
-        // Shift by X^slot to place message in coefficient slot
         let shifted = if slot == 0 {
             rlwe_switched
         } else {
             mul_rlwe_by_monomial(&rlwe_switched, slot, q)
         };
 
-        // Accumulate
         result_a = &result_a + &shifted.a;
         result_b = &result_b + &shifted.b;
     }
@@ -219,22 +161,14 @@ pub fn pack_lwe_to_rlwe(
     RlweCiphertext::from_parts(result_a, result_b)
 }
 
-/// Apply negacyclic permutation to convert LWE a-vector to polynomial form
-///
-/// The LWE inner product <a, s> where s is derived from RLWE secret key
-/// via sample_extract pattern equals the constant term of perm(a)(X) * s_rlwe(X).
-///
-/// Formula: negacyclic_perm(a) = [a[0], -a[d-1], -a[d-2], ..., -a[1]]
-///
-/// This is the inverse of the sample_extract_coeff0 transformation.
+/// Inverse of `sample_extract_coeff0`: [a[0], -a[d-1], ..., -a[1]], which makes
+/// <a, s_lwe> equal the constant term of perm(a)(X) * s_rlwe(X).
 fn negacyclic_perm(a: &[u64], q: u64) -> Vec<u64> {
     let d = a.len();
     let mut out = vec![0u64; d];
 
-    // First element stays the same
     out[0] = a[0];
 
-    // Rest are negated and reversed: out[i] = -a[d-i] for i > 0
     for i in 1..d {
         let val = a[d - i];
         out[i] = if val == 0 { 0 } else { q - val };
@@ -243,22 +177,10 @@ fn negacyclic_perm(a: &[u64], q: u64) -> Vec<u64> {
     out
 }
 
-/// Convert a single LWE ciphertext to RLWE via key-switching
+/// Re-encrypt one LWE ciphertext under s_rlwe, message in coefficient 0.
 ///
-/// The LWE ciphertext (a, b) encrypts m under s_lwe where:
-///   b + <a, s_lwe> ≈ Δm
-///
-/// We produce an RLWE ciphertext (a', b') under s_rlwe where:
-///   a'·s_rlwe + b' ≈ Δm  (in coefficient 0)
-///
-/// The key insight is that the LWE secret key s_lwe is derived from the RLWE
-/// secret key s_rlwe via sample_extract pattern:
-///   s_lwe[0] = s_rlwe[0], s_lwe[i] = s_rlwe[d-i] for i > 0
-///
-/// To make <a, s_lwe> equal to coeff_0(a'(X) * s_rlwe(X)), we need:
-///   a'(X) = negacyclic_perm(a)
-///
-/// The key-switching matrix K encrypts s_lwe·z^i under s_rlwe.
+/// Relies on s_lwe being the sample-extract image of s_rlwe, so the a-vector must go
+/// through `negacyclic_perm` first.
 fn lwe_to_rlwe_keyswitch(
     lwe: &LweCiphertext,
     ks_matrix: &KeySwitchingMatrix,
@@ -269,35 +191,26 @@ fn lwe_to_rlwe_keyswitch(
     let q = params.q;
     let moduli = params.moduli();
 
-    // Apply negacyclic permutation to convert LWE a-vector to polynomial
-    // This ensures <a, s_lwe> = coeff_0(a_poly * s_rlwe)
     let a_perm = negacyclic_perm(&lwe.a, q);
     let a_poly = Poly::from_coeffs_moduli(a_perm, moduli);
 
-    // Create initial b polynomial with LWE b in constant term
     let mut b_coeffs = vec![0u64; d];
     b_coeffs[0] = lwe.b;
     let b_poly = Poly::from_coeffs_moduli(b_coeffs, moduli);
 
-    // Key-switch: decompose a_poly and apply KS matrix
-    // This converts encryption from s_lwe (as polynomial) to s_rlwe
     let gadget = GadgetVector::new(params.gadget_base, params.gadget_len, q);
     let a_decomp = gadget_decompose(&a_poly, &gadget);
 
-    // Initialize result: (0, b)
     let mut result_a = Poly::zero_moduli(d, moduli);
     let mut result_b = b_poly;
 
-    // Accumulate: Σᵢ decomp_i · K[i]
     for (i, digit_poly) in a_decomp.iter().enumerate() {
         if i < ks_matrix.len() {
             let ks_row = ks_matrix.get_row(i);
 
-            // digit_poly · K[i].a
             let term_a = digit_poly.mul_ntt(&ks_row.a, ctx);
             result_a = &result_a + &term_a;
 
-            // digit_poly · K[i].b
             let term_b = digit_poly.mul_ntt(&ks_row.b, ctx);
             result_b = &result_b + &term_b;
         }
@@ -342,7 +255,7 @@ mod tests {
         let q = params.q;
         let delta = params.delta();
         let ctx = params.ntt_context();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let rlwe_sk = RlweSecretKey::generate(&params, &mut sampler);
 
@@ -378,7 +291,7 @@ mod tests {
         let q = params.q;
         let delta = params.delta();
         let ctx = params.ntt_context();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let rlwe_sk = RlweSecretKey::generate(&params, &mut sampler);
 
@@ -442,23 +355,19 @@ mod tests {
         let q = params.q;
         let delta = params.delta();
         let ctx = params.ntt_context();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
-        // Generate keys
         let rlwe_sk = RlweSecretKey::generate(&params, &mut sampler);
         let lwe_sk = LweSecretKey::from_rlwe(&rlwe_sk);
 
-        // Create packing KS matrix
         let gadget = GadgetVector::new(params.gadget_base, params.gadget_len, q);
         let packing_ks = generate_packing_ks_matrix(&lwe_sk, &rlwe_sk, &gadget, &mut sampler, &ctx);
 
-        // Create message in coeff 0
         let message = 12345u64;
         let mut msg_coeffs = vec![0u64; d];
         msg_coeffs[0] = message;
         let msg_poly = Poly::from_coeffs(msg_coeffs, q);
 
-        // Encrypt with RLWE
         let a = Poly::random(d, q);
         let error_coeffs: Vec<u64> = (0..d)
             .map(|_| ModQ::from_signed(sampler.sample(), q))
@@ -466,21 +375,16 @@ mod tests {
         let error = Poly::from_coeffs(error_coeffs, q);
         let rlwe_ct = RlweCiphertext::encrypt(&rlwe_sk, &msg_poly, delta, a, &error, &ctx);
 
-        // Extract LWE
         let lwe_ct = rlwe_ct.sample_extract_coeff0();
 
-        // Verify LWE decryption works
         let lwe_dec = lwe_ct.decrypt(&lwe_sk, delta, params.p);
         assert_eq!(
             lwe_dec, message,
-            "LWE decrypt failed: got {}, expected {}",
-            lwe_dec, message
+            "LWE decrypt failed: got {lwe_dec}, expected {message}"
         );
 
-        // Pack single LWE into RLWE
         let packed = pack_lwe_to_rlwe(&[lwe_ct], &packing_ks, &params);
 
-        // Decrypt packed RLWE
         let packed_dec = packed.decrypt(&rlwe_sk, delta, params.p, &ctx);
 
         assert_eq!(
@@ -492,14 +396,7 @@ mod tests {
         );
     }
 
-    // NOTE: test_pack_lwe_to_rlwe_multiple is intentionally removed.
-    //
-    // The simple shift-and-add packing approach (pack_lwe_to_rlwe with multiple LWEs)
-    // does NOT work because key-switched RLWEs have noise in ALL coefficients, not just
-    // in coefficient 0. When we shift and add, the noise from different coefficients mixes.
-    //
-    // Proper OnePacking requires automorphism-based tree packing as implemented in
-    // Google's InsPIRe code (research/InsPIRe/src/packing.rs).
-    //
-    // For now, OnePacking falls back to NoPacking (per-column extraction) which works correctly.
+    // No multi-LWE case here: a key-switched RLWE carries noise in every coefficient,
+    // so shift-and-add mixes it. Multi-LWE packing goes through
+    // `automorph_pack::pack_lwes`.
 }

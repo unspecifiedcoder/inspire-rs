@@ -329,6 +329,7 @@ impl InspireParams {
     /// - `ring_dim` is a power of two
     /// - `q` is NTT-friendly: q ≡ 1 (mod 2d)
     /// - `q >= p` for valid scaling
+    /// - `gadget_base^gadget_len >= q`, so the gadget spans every residue
     ///
     /// # Returns
     ///
@@ -340,6 +341,7 @@ impl InspireParams {
     /// - `"ring_dim must be a power of two"` if ring_dim is not a power of 2
     /// - `"q must be ≡ 1 (mod 2d) for NTT"` if q is not NTT-friendly
     /// - `"q must be >= p"` if q < p
+    /// - `"gadget_base^gadget_len must be >= q ..."` if the gadget is too narrow
     ///
     /// # Example
     ///
@@ -373,7 +375,7 @@ impl InspireParams {
         let two_n = 2 * self.ring_dim as u64;
         for &m in &self.crt_moduli {
             if m % two_n != 1 {
-                return Err("CRT moduli must be ≡ 1 (mod 2d) for NTT");
+                return Err("CRT moduli must be congruent to 1 mod 2*ring_dim for the NTT");
             }
         }
 
@@ -392,6 +394,19 @@ impl InspireParams {
         // p must be at most q to allow scaling (Δ = ⌊q/p⌋)
         if self.q < self.p {
             return Err("q must be >= p");
+        }
+
+        // `gadget_decompose` emits exactly `gadget_len` base-`gadget_base`
+        // digits and drops the rest, so a gadget narrower than q silently
+        // reconstructs `value mod gadget_base^gadget_len` instead of `value`.
+        let covering_len =
+            min_gadget_len(self.gadget_base, self.q).ok_or("gadget_base must be >= 2")?;
+        if self.gadget_len < covering_len {
+            return Err(
+                "gadget_base^gadget_len must be >= q; a narrower gadget drops the high \
+                 digits during key switching and decryption returns garbage. Raise \
+                 gadget_len (or gadget_base) until gadget_base^gadget_len >= q",
+            );
         }
 
         // Documentation-only note (no runtime rejection):
@@ -430,6 +445,22 @@ impl InspireParams {
         }
         Ok(())
     }
+}
+
+/// Smallest `len` with `base^len >= q`. `None` when `base < 2` or no
+/// `len <= 64` covers `q`.
+fn min_gadget_len(base: u64, q: u64) -> Option<usize> {
+    if base < 2 {
+        return None;
+    }
+    let mut covered = base as u128;
+    for len in 1..=64usize {
+        if covered >= q as u128 {
+            return Some(len);
+        }
+        covered *= base as u128;
+    }
+    None
 }
 
 fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
@@ -580,14 +611,14 @@ pub fn derive_medium_payload(inputs: &AdaptiveInputs) -> AdaptiveDerivation {
     let num_tiles_log2 = num_tiles.ceil().log2().ceil() as usize;
 
     let log_factor = inputs.performance_factor.trailing_zeros() as usize;
-    let (nu_1, nu_2) = if num_tiles_log2 % 2 == 0 {
+    let (nu_1, nu_2) = if num_tiles_log2.is_multiple_of(2) {
         (
             (num_tiles_log2 / 2).saturating_add(log_factor),
             (num_tiles_log2 / 2).saturating_sub(log_factor),
         )
     } else {
         (
-            ((num_tiles_log2 + 1) / 2).saturating_add(log_factor),
+            num_tiles_log2.div_ceil(2).saturating_add(log_factor),
             ((num_tiles_log2.saturating_sub(1)) / 2).saturating_sub(log_factor),
         )
     };
@@ -784,14 +815,16 @@ impl InspireParams {
     /// AVX-512 kernel ports remain compatible).
     ///
     /// All other derivation fields (poly_len, p=65537, sigma=6.4,
-    /// gadget_base=2^19, gadget_len=3) come from the Google derivation
-    /// unchanged. The override affects only the CRT-moduli + q-width.
+    /// gadget_base=2^19) come from the Google derivation unchanged.
+    /// `gadget_len` is re-derived as `ceil(log_z(q))` from the override:
+    /// the derivation's `t_exp_left = 3` covers only Google's ~2^53 q, and
+    /// a gadget narrower than q makes every decoded byte wrong.
     ///
     /// # Errors
     /// Returns `Err` if the override fails `validate()` (NTT friendliness,
-    /// 2-CRT coprimality, q >= p), or if the override's product is
-    /// LESS than Google's derived q (widening q can't make the noise
-    /// budget worse by construction, but narrowing is not allowed via
+    /// 2-CRT coprimality, q >= p, gadget coverage), or if the override's
+    /// product is LESS than Google's derived q (widening q can't make the
+    /// noise budget worse by construction, but narrowing is not allowed via
     /// this path - that would be insecure relative to Google's own
     /// bound).
     pub fn for_scenario_with_crt(
@@ -829,6 +862,10 @@ impl InspireParams {
             .try_fold(1u64, |acc, &m| acc.checked_mul(m))
             .ok_or("for_scenario_with_crt: CRT product overflows u64")?;
 
+        let gadget_len = min_gadget_len(d.z, q)
+            .ok_or("for_scenario_with_crt: no gadget length <= 64 covers the override q")?
+            .max(d.t_exp_left);
+
         let params = Self {
             ring_dim: d.poly_len,
             q,
@@ -836,7 +873,7 @@ impl InspireParams {
             p: d.p,
             sigma: d.sigma_x,
             gadget_base: d.z,
-            gadget_len: d.t_exp_left,
+            gadget_len,
             security_level: SecurityLevel::Bits128,
         };
         params.validate()?;
@@ -896,8 +933,8 @@ pub const DEFAULT_Q_2CRT_30BIT: [u64; 2] = [1_073_479_681, 1_073_692_673];
 ///
 /// # Fields
 ///
-/// * `shard_size_bytes` - Size of each shard in bytes (default: 1 GB)
-/// * `entry_size_bytes` - Size of each database entry in bytes (default: 32)
+/// * `shard_size_bytes` - Size of each shard in bytes
+/// * `entry_size_bytes` - Size of each database entry in bytes
 /// * `total_entries` - Total number of entries in the database
 ///
 /// # Example
@@ -905,21 +942,20 @@ pub const DEFAULT_Q_2CRT_30BIT: [u64; 2] = [1_073_479_681, 1_073_692_673];
 /// ```
 /// use raven_inspire::params::ShardConfig;
 ///
-/// // Configure a flat fixed-width database (e.g. 32-byte state entries).
-/// let config = ShardConfig::for_flat_db(32, 2_417_514_276);
-///
-/// // Each shard holds ~33M entries (1GB / 32 bytes)
-/// assert_eq!(config.entries_per_shard(), 1 << 25);
+/// // Shard geometry must match the ring dimension: the packing places one
+/// // entry per ring coefficient, so a shard holds exactly `ring_dim` entries.
+/// let config = ShardConfig::for_ring_dim(2048, 32, 2_417_514_276).unwrap();
+/// assert_eq!(config.entries_per_shard(), 2048);
 ///
 /// // Convert global index to shard coordinates
-/// let (shard_id, local_idx) = config.index_to_shard(100_000_000);
+/// let (shard_id, local_idx) = config.try_index_to_shard(100_000_000).unwrap();
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShardConfig {
     /// Size of each shard in bytes.
     ///
-    /// Default: 1 GB (1 << 30 bytes). Larger shards reduce overhead but
-    /// require more memory per query.
+    /// Must equal `ring_dim * entry_size_bytes`: the InspiRING packing
+    /// addresses one entry per ring coefficient.
     pub shard_size_bytes: u64,
 
     /// Size of each database entry in bytes.
@@ -934,11 +970,64 @@ pub struct ShardConfig {
 }
 
 impl ShardConfig {
-    /// Creates a shard configuration for a flat, fixed-width database using a
-    /// 1 GB shard preset.
+    /// Creates the shard configuration for a flat, fixed-width database at a
+    /// given ring dimension.
     ///
-    /// Set the public fields directly for full control. As one example,
-    /// private Ethereum account/storage state uses 32-byte entries.
+    /// The geometry is `shard_size_bytes = ring_dim * entry_size_bytes`,
+    /// which is what `encode_database` requires: the packing addresses one
+    /// entry per ring coefficient, so a shard holding more than `ring_dim`
+    /// entries cannot be queried.
+    ///
+    /// # Arguments
+    ///
+    /// * `ring_dim` - Ring dimension of the `InspireParams` this database is encoded under
+    /// * `entry_size_bytes` - Size of each fixed-width entry in bytes
+    /// * `total_entries` - Total number of entries in the database
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` for a zero ring dimension or entry size, when the shard
+    /// size overflows `u64`, or when the resulting config fails [`validate`](Self::validate).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use raven_inspire::params::ShardConfig;
+    ///
+    /// let config = ShardConfig::for_ring_dim(2048, 32, 2_417_514_276).unwrap();
+    /// assert_eq!(config.entry_size_bytes, 32);
+    /// assert_eq!(config.entries_per_shard(), 2048);
+    /// ```
+    pub fn for_ring_dim(
+        ring_dim: usize,
+        entry_size_bytes: usize,
+        total_entries: u64,
+    ) -> Result<Self, &'static str> {
+        if ring_dim == 0 {
+            return Err("ShardConfig: ring_dim must be non-zero");
+        }
+        if entry_size_bytes == 0 {
+            return Err("ShardConfig: entry_size_bytes must be non-zero");
+        }
+        let shard_size_bytes = (ring_dim as u64)
+            .checked_mul(entry_size_bytes as u64)
+            .ok_or("ShardConfig: ring_dim * entry_size_bytes overflows u64")?;
+        let config = Self {
+            shard_size_bytes,
+            entry_size_bytes,
+            total_entries,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Creates a shard configuration for a flat, fixed-width database at the
+    /// default ring dimension ([`InspireParams::default`]).
+    ///
+    /// Use [`for_ring_dim`](Self::for_ring_dim) whenever the parameters are
+    /// not the default ones. A geometry this constructor cannot satisfy
+    /// yields a config that [`validate`](Self::validate) rejects rather than
+    /// one that fails later inside `encode_database`.
     ///
     /// # Arguments
     ///
@@ -953,32 +1042,36 @@ impl ShardConfig {
     /// // 32-byte entries, about 2.4 billion of them
     /// let config = ShardConfig::for_flat_db(32, 2_417_514_276);
     /// assert_eq!(config.entry_size_bytes, 32);
+    /// assert!(config.validate().is_ok());
     /// ```
     pub fn for_flat_db(entry_size_bytes: usize, total_entries: u64) -> Self {
-        Self {
-            shard_size_bytes: 1 << 30,
+        let ring_dim = InspireParams::default().ring_dim;
+        Self::for_ring_dim(ring_dim, entry_size_bytes, total_entries).unwrap_or(Self {
+            shard_size_bytes: 0,
             entry_size_bytes,
             total_entries,
-        }
+        })
     }
 
     /// Computes the number of entries that fit in each shard.
     ///
     /// # Returns
     ///
-    /// The number of entries per shard: `shard_size_bytes / entry_size_bytes`.
+    /// The number of entries per shard: `shard_size_bytes / entry_size_bytes`,
+    /// or `0` when `entry_size_bytes` is zero.
     ///
     /// # Example
     ///
     /// ```
     /// use raven_inspire::params::ShardConfig;
     ///
-    /// let config = ShardConfig::for_flat_db(32, 1_000_000);
-    /// // 1 GB / 32 bytes = 33,554,432 entries per shard
-    /// assert_eq!(config.entries_per_shard(), 1 << 25);
+    /// let config = ShardConfig::for_ring_dim(2048, 32, 1_000_000).unwrap();
+    /// assert_eq!(config.entries_per_shard(), 2048);
     /// ```
     pub fn entries_per_shard(&self) -> u64 {
-        self.shard_size_bytes / self.entry_size_bytes as u64
+        self.shard_size_bytes
+            .checked_div(self.entry_size_bytes as u64)
+            .unwrap_or(0)
     }
 
     /// Computes the total number of shards needed for the database.
@@ -987,20 +1080,24 @@ impl ShardConfig {
     ///
     /// # Returns
     ///
-    /// The number of shards: `ceil(total_entries / entries_per_shard)`.
+    /// The number of shards: `ceil(total_entries / entries_per_shard)`, or
+    /// `0` when a shard holds no entries.
     ///
     /// # Example
     ///
     /// ```
     /// use raven_inspire::params::ShardConfig;
     ///
-    /// // about 2.4 billion 32-byte entries need ~72 one-GB shards
-    /// let config = ShardConfig::for_flat_db(32, 2_417_514_276);
-    /// let num_shards = config.num_shards();
-    /// assert!(num_shards > 70 && num_shards < 80);
+    /// // about 2.4 billion 32-byte entries at ring_dim 2048
+    /// let config = ShardConfig::for_ring_dim(2048, 32, 2_417_514_276).unwrap();
+    /// assert_eq!(config.num_shards(), 2_417_514_276u64.div_ceil(2048));
     /// ```
     pub fn num_shards(&self) -> u64 {
-        self.total_entries.div_ceil(self.entries_per_shard())
+        let entries_per_shard = self.entries_per_shard();
+        if entries_per_shard == 0 {
+            return 0;
+        }
+        self.total_entries.div_ceil(entries_per_shard)
     }
 
     /// Converts a global index to shard coordinates.
@@ -1023,30 +1120,60 @@ impl ShardConfig {
     /// ```
     /// use raven_inspire::params::ShardConfig;
     ///
-    /// let config = ShardConfig::for_flat_db(32, 2_417_514_276);
+    /// let config = ShardConfig::for_ring_dim(2048, 32, 2_417_514_276).unwrap();
     /// let (shard_id, local_idx) = config.index_to_shard(100_000_000);
     ///
     /// // Verify roundtrip
     /// let recovered = config.shard_to_index(shard_id, local_idx);
     /// assert_eq!(recovered, 100_000_000);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics when the config is degenerate (see
+    /// [`try_index_to_shard`](Self::try_index_to_shard) for the same mapping
+    /// with a typed error). A wrong-shard query returns a wrong record with
+    /// no signal, so an invariant break must not be swallowed here.
+    #[allow(
+        clippy::panic,
+        reason = "documented abort with a typed sibling: try_index_to_shard"
+    )]
+    #[must_use]
     pub fn index_to_shard(&self, global_idx: u64) -> (u32, u64) {
+        match self.try_index_to_shard(global_idx) {
+            Ok(coords) => coords,
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    /// Converts a global index to shard coordinates, reporting a degenerate
+    /// config instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when a shard holds no entries, or when the shard id
+    /// exceeds `u32::MAX` (which would truncate and address the wrong shard).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use raven_inspire::params::ShardConfig;
+    ///
+    /// let config = ShardConfig::for_ring_dim(2048, 32, 1_000_000).unwrap();
+    /// assert_eq!(config.try_index_to_shard(4096).unwrap(), (2, 0));
+    /// ```
+    pub fn try_index_to_shard(&self, global_idx: u64) -> Result<(u32, u64), &'static str> {
         let entries_per_shard = self.entries_per_shard();
-        // Raven-local patch: replace silent
-        // `as u32` truncation with `try_into` + `expect`. At any
-        // practical ShardConfig (entries_per_shard >= 1, total_entries
-        // <= 2^63) the quotient fits in u32, so the expect is
-        // structurally unreachable. Under an adversarial /
-        // accidental config where it would overflow, we panic loudly
-        // rather than silently truncate shard_id and produce
-        // wrong-shard queries with correctness failure. See
-        // `ShardConfig::validate` for the constructor-time guard.
-        let shard_id_u64 = global_idx / entries_per_shard;
-        let shard_id: u32 = shard_id_u64
-            .try_into()
-            .expect("ShardConfig produces shard_id > u32::MAX; ShardConfig::validate should have been called");
-        let local_idx = global_idx % entries_per_shard;
-        (shard_id, local_idx)
+        if entries_per_shard == 0 {
+            return Err(
+                "ShardConfig: entries_per_shard is zero; shard_size_bytes must be \
+                 ring_dim * entry_size_bytes with a non-zero entry size",
+            );
+        }
+        let shard_id: u32 = (global_idx / entries_per_shard).try_into().map_err(|_| {
+            "ShardConfig: shard_id exceeds u32::MAX; raise shard_size_bytes or lower total_entries"
+        })?;
+        Ok((shard_id, global_idx % entries_per_shard))
     }
 
     /// Validate the ShardConfig against invariants that downstream
@@ -1064,6 +1191,35 @@ impl ShardConfig {
             return Err(
                 "ShardConfig: num_shards exceeds u32::MAX; shard_id would overflow. \
                  Increase shard_size_bytes OR reduce total_entries.",
+            );
+        }
+        Ok(())
+    }
+
+    /// Validate the shard geometry against the parameters the database is
+    /// encoded under: a shard must hold exactly `ring_dim` entries, because
+    /// the packing addresses one entry per ring coefficient.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when [`validate`](Self::validate) fails, or when
+    /// `entries_per_shard != params.ring_dim`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use raven_inspire::params::{InspireParams, ShardConfig};
+    ///
+    /// let params = InspireParams::secure_128_d2048();
+    /// let config = ShardConfig::for_ring_dim(params.ring_dim, 32, 100_000).unwrap();
+    /// assert!(config.validate_for_params(&params).is_ok());
+    /// ```
+    pub fn validate_for_params(&self, params: &InspireParams) -> Result<(), &'static str> {
+        self.validate()?;
+        if self.entries_per_shard() != params.ring_dim as u64 {
+            return Err(
+                "ShardConfig: entries_per_shard must equal params.ring_dim; set \
+                 shard_size_bytes = ring_dim * entry_size_bytes (see ShardConfig::for_ring_dim)",
             );
         }
         Ok(())
@@ -1088,7 +1244,7 @@ impl ShardConfig {
     /// ```
     /// use raven_inspire::params::ShardConfig;
     ///
-    /// let config = ShardConfig::for_flat_db(32, 2_417_514_276);
+    /// let config = ShardConfig::for_ring_dim(2048, 32, 2_417_514_276).unwrap();
     ///
     /// // Entry 10 in shard 2
     /// let global_idx = config.shard_to_index(2, 10);
@@ -1120,21 +1276,18 @@ mod tests {
 
     #[test]
     fn test_shard_config() {
-        // about 2.4 billion 32-byte entries
+        // about 2.4 billion 32-byte entries at the default ring dimension
         let config = ShardConfig::for_flat_db(32, 2_417_514_276);
 
-        // Each shard: 1GB / 32B = ~33M entries
         let entries_per_shard = config.entries_per_shard();
-        assert_eq!(entries_per_shard, 1 << 25); // 33554432
+        assert_eq!(entries_per_shard, 2048);
 
-        // Should need ~72 shards
-        let num_shards = config.num_shards();
-        assert!(num_shards > 70 && num_shards < 80);
+        assert_eq!(config.num_shards(), 2_417_514_276u64.div_ceil(2048));
     }
 
     #[test]
     fn test_index_conversion() {
-        let config = ShardConfig::for_flat_db(32, 2_417_514_276);
+        let config = ShardConfig::for_ring_dim(2048, 32, 2_417_514_276).unwrap();
 
         // Test roundtrip
         let global_idx = 100_000_000u64;

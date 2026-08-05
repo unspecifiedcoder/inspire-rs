@@ -1,17 +1,12 @@
-//! Byte budget for the shipped d=2048 client session (CRS + packing key).
-//!
-//! Separates two cost axes:
-//!   - transferred / persisted bytes (bincode-serialized): the CRS the
-//!     client downloads plus the y_body packing key it uploads/persists;
-//!   - resident-only bytes: the rotation tables (`y_all*`) and pack-params
-//!     automorph tables, which are `#[serde(skip)]` and live only in RAM.
-//!
-//! Regression guard: asserts (1) the shipped CRS stays under 2 MiB, so a large public
-//! matrix cannot re-enter the client wire format, and (2) a query decodes byte-identically
-//! through a serialized-then-deserialized CRS at the production cell - the gate that
-//! actually guards a `ServerCrs` wire-format change.
-//!
-//! Run: `cargo test --release --test zz_session_byte_profile -- --nocapture`.
+//! Byte budget for the d=2048 client session, separating serialized bytes from
+//! the `#[serde(skip)]` rotation and automorph tables that stay resident. Holds
+//! the CRS under 2 MiB and decodes a query through a round-tripped CRS, which is
+//! what actually catches a `ServerCrs` wire-format change.
+
+#![allow(
+    clippy::expect_used,
+    reason = "test-target fixture helpers; an abort here is the failure report"
+)]
 
 use raven_inspire::inspiring::{ClientPackingKeys, PackParams};
 use raven_inspire::math::GaussianSampler;
@@ -29,7 +24,7 @@ fn mib(bytes: u64) -> f64 {
 }
 
 fn poly_rows_bytes<T: Serialize>(rows: &[Vec<T>]) -> (usize, u64) {
-    let count = rows.iter().map(|r| r.len()).sum();
+    let count = rows.iter().map(std::vec::Vec::len).sum();
     let bytes = rows.iter().flat_map(|r| r.iter()).map(|p| ssize(p)).sum();
     (count, bytes)
 }
@@ -37,7 +32,7 @@ fn poly_rows_bytes<T: Serialize>(rows: &[Vec<T>]) -> (usize, u64) {
 fn profile(entry_size: usize) {
     let params = InspireParams::secure_128_d2048();
     let d = params.ring_dim;
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
     let db = vec![0u8; d * entry_size];
     let (crs, encoded_db, rlwe_sk) = setup(&params, &db, entry_size, &mut sampler).expect("setup");
@@ -46,7 +41,8 @@ fn profile(entry_size: usize) {
     let crs_total = ssize(&crs);
     let rlwe = ssize(&rlwe_sk);
 
-    let pp = PackParams::new(&crs.params, crs.inspiring_num_columns);
+    let pp = PackParams::try_new(&crs.params, crs.inspiring_num_columns)
+        .expect("CRS width must be legal");
     let pp_resident = ssize(&pp);
     let keys = ClientPackingKeys::generate(&rlwe_sk, &pp, crs.inspiring_w_seed, &mut sampler);
     let y_body = ssize(&keys.y_body);
@@ -80,8 +76,7 @@ fn profile(entry_size: usize) {
     );
     eprintln!("  >>> RESIDENT TOTAL   {:>10.2} MiB", mib(resident));
 
-    // Size guard: a >2 MiB CRS means a large field (e.g. a public a-matrix) re-entered
-    // the client wire format.
+    // a CRS past 2 MiB means a public matrix re-entered the wire format
     assert!(
         crs_total < 2 * 1024 * 1024,
         "ServerCrs is {:.2} MiB; expected < 2 MiB. A >2 MiB CRS means a large field \
@@ -89,9 +84,7 @@ fn profile(entry_size: usize) {
         mib(crs_total)
     );
 
-    // Wire-format decode gate at the production cell: serialize -> deserialize the CRS,
-    // then run query -> respond -> extract through the DESERIALIZED CRS and assert the
-    // planted entry decodes byte-identical. A field wrongly dropped on the wire breaks this.
+    // extract through the deserialized CRS: a field dropped on the wire fails here
     let crs2: ServerCrs = bincode::deserialize(&bincode::serialize(&crs).expect("serialize crs"))
         .expect("deserialize crs");
     let (state, q) = query(&crs2, 0, &encoded_db.config, &rlwe_sk, &mut sampler).expect("query");

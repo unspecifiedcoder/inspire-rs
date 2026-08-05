@@ -1,22 +1,7 @@
-//! 2-CRT bug-hunt smoke bisection.
-//!
-//! Runs TwoPacking + InspiRING round-trips at increasing
-//! `(ring_dim, entries, record_bytes)` cells under both:
-//!   - single-prime DEFAULT_Q baseline (known-good)
-//!   - 2-CRT `DEFAULT_Q_2CRT_30BIT` pair (suspected-broken)
-//!
-//! Prints PASS/FAIL per cell so a human can locate the smallest
-//! cell at which 2-CRT first diverges from 1-CRT. Then the code
-//! audit has a concrete failure point to instrument.
-//!
-//! Run with:
-//!   cargo test --manifest-path crates/raven-inspire/Cargo.toml \
-//!              --release --test two_crt_bisection -- --nocapture
-//!
-//! Each cell is marked `#[ignore]` because the 2^20 cells take
-//! ~1 min of setup + smoke. The smaller cells run under the
-//! default unignored path so a quick `cargo test` catches
-//! gross regressions without paying the full bisection cost.
+//! Round-trips at increasing `(ring_dim, entries, record_bytes)` cells under
+//! both the single-prime and the 2-CRT modulus, reporting per cell, so the
+//! smallest diverging cell can be read off. The 2^20 cells are `#[ignore]`d:
+//! each costs about a minute of setup.
 
 use raven_inspire::math::GaussianSampler;
 use raven_inspire::params::{InspireParams, SecurityLevel, DEFAULT_Q_2CRT_30BIT};
@@ -24,7 +9,6 @@ use raven_inspire::{
     extract_inspiring, query_seeded, respond_seeded_inspiring, setup, PackingMode,
 };
 
-/// Construct DEFAULT_Q single-prime baseline at the given ring_dim.
 fn default_q_single(ring_dim: usize) -> InspireParams {
     InspireParams {
         ring_dim,
@@ -38,9 +22,8 @@ fn default_q_single(ring_dim: usize) -> InspireParams {
     }
 }
 
-/// Construct the 2-CRT 30-bit pair at the given ring_dim. Keeps
-/// gadget_base = 2^20 (DEFAULT_Q preset value) so the only change
-/// vs the baseline is the CRT shape (1-CRT vs 2-CRT) and q-width.
+/// Same gadget_base as the baseline, so CRT shape and q-width are the only
+/// variables.
 fn two_crt_30bit(ring_dim: usize) -> InspireParams {
     let crt = DEFAULT_Q_2CRT_30BIT.to_vec();
     let q: u64 = crt.iter().product();
@@ -56,13 +39,12 @@ fn two_crt_30bit(ring_dim: usize) -> InspireParams {
     }
 }
 
-/// Plants `(i + j) mod 251` at every byte; checks recovered bytes.
 fn smoke_twopacking_inspiring(
     params: &InspireParams,
     entries: u64,
     record_bytes: usize,
 ) -> Result<(), String> {
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let total = (entries as usize)
         .checked_mul(record_bytes)
         .ok_or_else(|| "entries * record_bytes overflow".to_string())?;
@@ -75,7 +57,6 @@ fn smoke_twopacking_inspiring(
     let (crs, encoded_db, sk) = setup(params, &db, record_bytes, &mut sampler)
         .map_err(|e| format!("setup failed: {e:?}"))?;
 
-    // Probe three indices across the DB.
     let n = entries.saturating_sub(1).max(1);
     let indices: [u64; 3] = [n / 4, n / 2, (3 * n) / 4];
     for &idx in &indices {
@@ -121,7 +102,6 @@ fn run_cell(crt_shape: &str, params: &InspireParams, entries: u64, record_bytes:
     }
 }
 
-/// Fast bisection (d=256, d=512) runs under default `cargo test`.
 #[test]
 fn bisection_small_rings() {
     println!("\n=== Phase E.6 smoke bisection (small rings, fast) ===");
@@ -136,8 +116,6 @@ fn bisection_small_rings() {
     }
 }
 
-/// Medium rings (d=1024, d=2048 small entry count). Fast enough to stay
-/// un-ignored.
 #[test]
 fn bisection_medium_rings() {
     println!("\n=== Phase E.6 smoke bisection (medium rings) ===");
@@ -152,7 +130,6 @@ fn bisection_medium_rings() {
     }
 }
 
-/// Large rings at small entry count (1 shard worth). Also fast.
 #[test]
 fn bisection_large_ring_one_shard() {
     println!("\n=== Phase E.6 smoke bisection (d=2048, 1 shard) ===");

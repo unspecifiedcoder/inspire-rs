@@ -194,6 +194,11 @@ pub fn ifma52_product_lohi(a: u64, b: u64) -> (u64, u64) {
 }
 
 #[cfg(target_arch = "x86_64")]
+#[allow(
+    clippy::incompatible_msrv,
+    clippy::wildcard_imports,
+    reason = "AVX-512 intrinsics stabilised in 1.89, which is this crate's MSRV; enumerating ~30 intrinsics per import buys nothing"
+)]
 pub mod avx512_ifma {
     //! 8-wide SIMD IFMA52 Montgomery via AVX-512-IFMA intrinsics.
     //!
@@ -373,13 +378,20 @@ pub mod avx512_ifma {
     }
 }
 
-// Re-export the AVX-512 entry point for non-x86 builds as a stub that
-// panics. Callers should branch on `is_x86_feature_detected!` before
-// dispatching; this stub exists so the module compiles on other
-// architectures.
+/// Shape-compatible stub so non-x86_64 targets still compile the dispatch
+/// site. Aborting beats returning wrong residues silently.
 #[cfg(not(target_arch = "x86_64"))]
 pub mod avx512_ifma {
+    /// # Safety
+    ///
+    /// Unreachable on this target: callers MUST gate on
+    /// `is_x86_feature_detected!("avx512ifma")`, which is false everywhere
+    /// off x86_64. Calling it anyway aborts.
     #[allow(unused_variables)]
+    #[allow(
+        clippy::panic,
+        reason = "abort is the contract: the scalar fallback at super::mont_mul_split52 is the path off x86_64"
+    )]
     pub unsafe fn pointwise_mont_mul_x8(
         a: &[u64],
         b: &[u64],

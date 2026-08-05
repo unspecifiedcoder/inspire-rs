@@ -1,21 +1,13 @@
-//! 2-CRT regression grid at the PSE-compatible
-//! `(entries, record_bytes)` axes.
-//!
-//! Confirms the `apply_automorphism_ntt` limb-truncation fix holds
-//! across:
-//! - multiple ring dimensions (256, 512, 1024, 2048)
-//! - multiple shard layouts (1 shard, multi-shard)
-//! - multiple record sizes (8, 32, 128, 256 B)
-//! - both the derived Google 2-CRT pair AND the 30-bit fallback pair
-//!
-//! Memory-intensive cells (2^24, 2^28) are excluded — they would need
-//! multi-GiB DBs that exceed a typical CI runner's RAM envelope. The
-//! fix's correctness is dimension-independent, so cells up through
-//! 2^15 entries provide sufficient coverage for regression purposes;
-//! the larger cells are measured by the B1 bench adapter.
-//!
-//! If any of these asserts fail on a future fork merge or refactor,
-//! the commit-E patch has regressed.
+//! 2-CRT round-trip grid over ring dimension, shard layout, record size and
+//! both CRT pairs. Cells above 2^15 entries are left to the bench harness:
+//! multi-GiB databases exceed a CI runner's RAM and the algebra under test is
+//! dimension-independent.
+
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "test-target fixture helpers; an abort here is the failure report"
+)]
 
 use raven_inspire::math::GaussianSampler;
 use raven_inspire::params::{InspireParams, SecurityLevel, DEFAULT_Q_2CRT_30BIT};
@@ -38,7 +30,7 @@ fn base_params(ring_dim: usize, crt_moduli: Vec<u64>) -> InspireParams {
 }
 
 fn smoke_cell(params: &InspireParams, entries: u64, record_bytes: usize, label: &str) {
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let total = (entries as usize) * record_bytes;
     let mut db = vec![0u8; total];
     for i in 0..entries as usize {
@@ -49,7 +41,6 @@ fn smoke_cell(params: &InspireParams, entries: u64, record_bytes: usize, label: 
     let (crs, encoded_db, sk) =
         setup(params, &db, record_bytes, &mut sampler).expect("setup must succeed");
 
-    // Three widely-spaced indices.
     let n = entries.saturating_sub(1).max(1);
     let indices = [n / 4, n / 2, (3 * n) / 4];
     for &idx in &indices {
@@ -67,8 +58,6 @@ fn smoke_cell(params: &InspireParams, entries: u64, record_bytes: usize, label: 
         );
     }
 }
-
-// Google's derived 2-CRT pair (~2^53 q) across the axes.
 
 #[test]
 fn commit_e_google_crt_d256_singleshard_variable_records() {
@@ -99,7 +88,6 @@ fn commit_e_google_crt_d2048_one_shard() {
 
 #[test]
 fn commit_e_google_crt_d2048_multi_shard_small_records() {
-    // Entries > ring_dim: multiple shards exercised.
     let crt = vec![67_043_329u64, 132_120_577u64];
     let params = base_params(2048, crt);
     smoke_cell(
@@ -110,9 +98,6 @@ fn commit_e_google_crt_d2048_multi_shard_small_records() {
     );
 }
 
-// 30-bit pair (~2^60 q) for kernel-safe u32-fit + DEFAULT_Q-class
-// headroom.
-
 #[test]
 fn commit_e_30bit_crt_d2048_multi_records() {
     let crt = DEFAULT_Q_2CRT_30BIT.to_vec();
@@ -121,9 +106,6 @@ fn commit_e_30bit_crt_d2048_multi_records() {
         smoke_cell(&params, 2048, rb, &format!("30bit-crt d=2048 rb={rb}"));
     }
 }
-
-// Baseline: single-prime DEFAULT_Q must still work post-fix (no
-// regression in the legacy path).
 
 #[test]
 fn commit_e_single_prime_default_q_no_regression() {

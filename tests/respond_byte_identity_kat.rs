@@ -1,21 +1,14 @@
-//! Byte-identity gate for the `parallel` (rayon) feature: `respond` produces byte-identical
-//! output whether rayon is on or off.
-//!
-//! Layered:
-//! 1. DIRECT (`respond_byte_identical_par_vs_seq_on_fixed_input`): a checked-in fixed
-//!    `(crs, encoded_db, query)` fixture is hashed through the PRODUCTION `respond_inspiring`
-//!    under both feature builds; both must equal the same golden. Same input + same golden in
-//!    both builds == par-bytes == seq-bytes. The fixture freezes the (thread_rng-sampled)
-//!    ciphertext `a`, so cross-run reproducibility of setup/query is not needed.
-//! 2. STRUCTURAL (`par_iter_map_collect_is_order_identical_to_sequential`, parallel-only): the
-//!    respond/packing kernels are all `par_iter().map(pure_fn).collect()` over PUBLIC data, so
-//!    their byte-identity reduces to rayon's order-preserving `collect`. This pins that fact and
-//!    catches a future non-order-preserving `par_iter`.
-//! Production-cell decode (d=2048) is NOT covered by `e2e_pir`, which pins every test to d=256
-//! (`tests/e2e_pir.rs:14`). The d=2048 decode grids are
-//! `tests/commit_e_two_crt_regression_grid.rs` and `tests/two_crt_bisection.rs`.
+//! `respond` must emit identical bytes with and without the `parallel` feature.
+//! A checked-in fixture is hashed to one golden under both builds, and the
+//! order-preserving `par_iter().map().collect()` those kernels rely on is
+//! pinned separately.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
+#![allow(
+    clippy::doc_lazy_continuation,
+    clippy::trivially_copy_pass_by_ref,
+    reason = "KAT narration and fixture plumbing"
+)]
 
 use std::path::PathBuf;
 
@@ -53,37 +46,34 @@ fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/respond_byte_identity_d256.bin")
 }
 
-// Byte-identity is a structural, d-independent property of order-preserving maps; a small d=256
-// fixture suffices. The golden is captured from the frozen fixture and re-verified under both
-// feature builds.
+// order-preservation is d-independent, so a d=256 fixture suffices
 const GOLDEN_FNV1A: u64 = 0x2205_050f_4bc4_b12c;
 
 #[test]
 fn respond_byte_identical_par_vs_seq_on_fixed_input() {
     let path = fixture_path();
-    let (crs, encoded_db, q): (ServerCrs, EncodedDatabase, ClientQuery) = match std::fs::read(&path)
+    let (crs, encoded_db, q): (ServerCrs, EncodedDatabase, ClientQuery) = if let Ok(bytes) =
+        std::fs::read(&path)
     {
-        Ok(bytes) => bincode::deserialize(&bytes).expect("deserialize fixture"),
-        Err(_) => {
-            // Bootstrap: generate the fixture once, then fail so the golden can be captured.
-            let params = d256_params();
-            let entry_size = 32usize;
-            let db: Vec<u8> = (0..params.ring_dim * entry_size)
-                .map(|i| (i % 251) as u8)
-                .collect();
-            let mut sampler = GaussianSampler::with_seed(params.sigma, 1);
-            let mut rng = ChaCha20Rng::seed_from_u64(2);
-            let (crs, encoded_db, sk) =
-                setup_with_rng(&params, &db, entry_size, &mut sampler, &mut rng).unwrap();
-            let (_state, qy) = query(&crs, 3, &encoded_db.config, &sk, &mut sampler).unwrap();
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(
-                &path,
-                bincode::serialize(&(&crs, &encoded_db, &qy)).unwrap(),
-            )
-            .unwrap();
-            panic!("fixture generated at {path:?}; re-run this test to print the golden, then pin GOLDEN_FNV1A");
-        }
+        bincode::deserialize(&bytes).expect("deserialize fixture")
+    } else {
+        let params = d256_params();
+        let entry_size = 32usize;
+        let db: Vec<u8> = (0..params.ring_dim * entry_size)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 1);
+        let mut rng = ChaCha20Rng::seed_from_u64(2);
+        let (crs, encoded_db, sk) =
+            setup_with_rng(&params, &db, entry_size, &mut sampler, &mut rng).unwrap();
+        let (_state, qy) = query(&crs, 3, &encoded_db.config, &sk, &mut sampler).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            bincode::serialize(&(&crs, &encoded_db, &qy)).unwrap(),
+        )
+        .unwrap();
+        panic!("fixture generated at {path:?}; re-run this test to print the golden, then pin GOLDEN_FNV1A");
     };
 
     let response = respond_inspiring(&crs, &encoded_db, &q).expect("respond");

@@ -1,8 +1,5 @@
-//! Raven-local fork patches: regression tests
-//!
-//! One test per patch applied in the Raven-local fork
-//! (see `UPSTREAM.md`). Each test locks the fix against future
-//! upstream pulls that might revert the change.
+//! Locks each Raven-local deviation from upstream (see `UPSTREAM.md`) so a
+//! later upstream pull cannot silently revert it.
 
 use raven_inspire::math::GaussianSampler;
 use raven_inspire::params::{InspireParams, InspireVariant, SecurityLevel, ShardConfig};
@@ -13,7 +10,6 @@ use raven_inspire::{
     setup, ClientSession, PackingMode, ServerInspiringCache, ServerResponse, ServerSessionStore,
 };
 
-/// Small params for fast correctness tests.
 fn small_params() -> InspireParams {
     InspireParams {
         ring_dim: 256,
@@ -27,23 +23,17 @@ fn small_params() -> InspireParams {
     }
 }
 
-/// Commit A: `encode_database` returns a typed error when
-/// `entries_per_shard > ring_dim` instead of the upstream
-/// `debug_assert!` that release builds silently dropped.
+/// `entries_per_shard > ring_dim` is a typed error; upstream `debug_assert!`
+/// vanishes in release and panics deep in `inverse_monomial` instead.
 #[test]
 fn commit_a_encode_database_returns_error_on_oversized_shard() {
     let params = small_params();
-    // Deliberately mis-sized: 1 GiB shards at 32 B/entry -> 2^25 entries per
-    // shard, which exceeds ring_dim=256 by ~130000x. The pre-fork code
-    // path would have debug_asserted (gone in release) then panicked deep
-    // in `inverse_monomial`.
     let shard_config = ShardConfig {
         shard_size_bytes: 1 << 30,
         entry_size_bytes: 32,
         total_entries: 1 << 20,
     };
-    // Small non-empty database so the `database.is_empty()` early return
-    // doesn't mask the check.
+    // non-empty, else the is_empty early return masks the check
     let db = vec![0u8; 32 * 4];
     let err = encode_database(&db, 32, &params, &shard_config)
         .expect_err("oversized ShardConfig must return a typed error");
@@ -58,14 +48,12 @@ fn commit_a_encode_database_returns_error_on_oversized_shard() {
     );
 }
 
-/// Commit B: `respond_with_variant(TwoPacking)` returns a typed error
-/// redirecting the caller to the seeded pipeline, instead of silently
-/// routing through the OnePacking response path (which produced
-/// semantically wrong plaintext via `extract_two_packing`).
+/// `respond_with_variant(TwoPacking)` errors toward the seeded pipeline rather
+/// than routing through OnePacking, which decodes to wrong plaintext.
 #[test]
 fn commit_b_respond_with_variant_twopacking_returns_error() {
     let params = small_params();
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let num_entries = params.ring_dim;
     let entry_size = 2usize;
     let db: Vec<u8> = (0..num_entries)
@@ -92,14 +80,12 @@ fn commit_b_respond_with_variant_twopacking_returns_error() {
     );
 }
 
-/// Commit C: `extract_with_variant(TwoPacking)` routes to
-/// `extract_inspiring` when the server produced an InspiRING-shaped
-/// response, matching the upstream binary pair at
-/// `bin/client.rs:302` (pre-fork) that bypassed the wrapper.
+/// `extract_with_variant(TwoPacking)` routes to `extract_inspiring` on an
+/// InspiRING-shaped response, matching what upstream's client did directly.
 #[test]
 fn commit_c_extract_with_variant_handles_inspiring_response() {
     let params = small_params();
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let num_entries = params.ring_dim;
     let entry_size = 2usize;
     let db: Vec<u8> = (0..num_entries)
@@ -120,10 +106,7 @@ fn commit_c_extract_with_variant_handles_inspiring_response() {
     let response: ServerResponse =
         respond_seeded_inspiring(&crs, &encoded_db, &seeded_query).unwrap();
 
-    // The canonical path: `extract_inspiring` direct.
     let via_inspiring = extract_inspiring(&crs, &state, &response, entry_size).unwrap();
-    // Commit C makes `extract_with_variant(TwoPacking)` match the canonical
-    // path for InspiRING-shaped responses. The two outputs must be equal.
     let via_wrapper = extract_with_variant(
         &crs,
         &state,
@@ -134,28 +117,18 @@ fn commit_c_extract_with_variant_handles_inspiring_response() {
     .unwrap();
 
     assert_eq!(via_inspiring, via_wrapper, "commit C must route TwoPacking extraction to extract_inspiring for InspiRING-shaped responses");
-    // Also verify the extracted value matches the planted entry.
     let target_byte = (target_index as usize) * entry_size;
     assert_eq!(&via_wrapper[..], &db[target_byte..target_byte + entry_size]);
 }
 
-/// Commit D: `secure_128_d{2048,4096}` constructors use the
-/// library-internal DEFAULT_Q (2^60 - 2^14 + 1) in single-prime form
-/// instead of the under-provisioned 2-CRT `[268369921, 249561089]`
-/// product (q approx 2^56). Correctness at 2^20 x 256 B under the
-/// fixed preset + the InsPIRe^2 Seeded+Inspiring pipeline.
+/// The `secure_128_d*` presets carry single-prime DEFAULT_Q, not the
+/// under-provisioned 2-CRT pair whose product lands near 2^56.
 ///
-/// Marked `#[ignore]` by default: the setup at ring_dim 2048 +
-/// 1M entries + 256 B allocates 256 MiB of database + 5+s setup and
-/// takes ~ 10 s per smoke invocation. Run explicitly with
-/// `cargo test --manifest-path crates/raven-inspire/Cargo.toml
-/// --release -- --ignored commit_d`.
+/// `#[ignore]`d: 2^20 x 256 B allocates a 256 MiB database and runs ~10 s.
 #[test]
 #[ignore = "2^20 x 256 B cell; run explicitly under --release"]
 fn commit_d_preset_default_q_passes_smoke_at_2_20_x_256b() {
     let params = InspireParams::secure_128_d2048();
-    // The commit-D fix is that this preset now carries the DEFAULT_Q
-    // struct literal instead of the 2-CRT moduli.
     assert_eq!(
         params.q, 1_152_921_504_606_830_593,
         "secure_128_d2048 must ship DEFAULT_Q after commit D"
@@ -166,7 +139,7 @@ fn commit_d_preset_default_q_passes_smoke_at_2_20_x_256b() {
         "secure_128_d2048 must use single-prime CRT form after commit D"
     );
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let entries: u64 = 1 << 20;
     let entry_size: usize = 256;
     let total = (entries as usize) * entry_size;
@@ -196,19 +169,12 @@ fn commit_d_preset_default_q_passes_smoke_at_2_20_x_256b() {
     }
 }
 
-/// Packing-key pre-exchange handshake.
-///
-/// Validates two things:
-/// 1. `ClientSession::register_with` uploads keys once, returns a handle,
-///    and subsequent queries emit compact wire payloads
-///    (`inspiring_packing_keys = None`, `session_handle = Some(h)`).
-/// 2. `respond_seeded_inspiring_cached_with_session` resolves the handle
-///    against a `ServerSessionStore` and produces a byte-equal result
-///    to the pre-handshake inlined-keys path.
+/// Registering packing keys once must shrink the wire query and still decode
+/// byte-equal to the inlined-keys path.
 #[test]
 fn phase_b_handshake_roundtrip_byte_equal_to_inlined_keys() {
     let params = small_params();
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let num_entries = params.ring_dim;
     let entry_size = 2usize;
     let db: Vec<u8> = (0..num_entries)
@@ -219,7 +185,6 @@ fn phase_b_handshake_roundtrip_byte_equal_to_inlined_keys() {
     let server_cache = ServerInspiringCache::new(&crs, &encoded_db).unwrap();
     let session_store = ServerSessionStore::new();
 
-    // Inlined-keys baseline (pre-handshake wire format).
     let session_inline = ClientSession::new(crs.clone(), rlwe_sk.clone(), &mut sampler).unwrap();
     assert!(session_inline.session_handle().is_none());
 
@@ -241,7 +206,6 @@ fn phase_b_handshake_roundtrip_byte_equal_to_inlined_keys() {
     let decoded_inline =
         extract_inspiring(&crs, &state_inline, &response_inline, entry_size).unwrap();
 
-    // Handshake path: register, emit compact query, respond via session.
     let mut session_hs = ClientSession::new(crs.clone(), rlwe_sk, &mut sampler).unwrap();
     let handle = session_hs
         .register_with(&session_store)
@@ -265,7 +229,6 @@ fn phase_b_handshake_roundtrip_byte_equal_to_inlined_keys() {
         "handshake session must carry the handle"
     );
 
-    // Compact query wire bytes must be strictly smaller than inlined.
     let bytes_inline = bincode::serialize(&q_inline).unwrap().len();
     let bytes_hs = bincode::serialize(&q_hs).unwrap().len();
     assert!(
@@ -283,7 +246,6 @@ fn phase_b_handshake_roundtrip_byte_equal_to_inlined_keys() {
     .unwrap();
     let decoded_hs = extract_inspiring(&crs, &state_hs, &response_hs, entry_size).unwrap();
 
-    // Both paths must recover the same planted byte.
     let target_byte = 42 * entry_size;
     let expected = &db[target_byte..target_byte + entry_size];
     assert_eq!(decoded_inline.as_slice(), expected);

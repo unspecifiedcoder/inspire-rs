@@ -1,13 +1,11 @@
-//! Raw AVX-512-IFMA52 throughput probe for Zen 5.
-//!
-//! Measures madd52lo/madd52hi instruction throughput in isolation to
-//! determine the hardware IFMA cycle budget. Intel reports 1/cycle per
-//! port (2 ports = 2/cycle). AMD Zen 4 was reported at 1/4-cycle
-//! (poor). Zen 5 reports vary. Empirical measurement determines
-//! whether IFMA52 Montgomery is meaningfully faster than scalar mulx
-//! on this specific CPU.
-//!
-//! Gated via `RAVEN_MICROBENCH=1`.
+//! madd52lo/madd52hi throughput in isolation; IFMA per-cycle rates differ
+//! sharply by microarchitecture, so the budget is measured, not assumed.
+//! Runs only under `RAVEN_MICROBENCH=1`.
+
+#![allow(
+    clippy::incompatible_msrv,
+    reason = "AVX-512 intrinsics stabilised in 1.89; probe is CPUID-gated at runtime"
+)]
 
 use std::arch::x86_64::*;
 use std::time::Instant;
@@ -31,7 +29,7 @@ unsafe fn probe_madd52_throughput() {
     const ITERS: usize = 10_000_000;
     const UNROLL: usize = 16;
 
-    // Independent accumulators to avoid dependency chain.
+    // independent accumulators, else the dependency chain sets the rate
     let mask52 = _mm512_set1_epi64(((1u64 << 52) - 1) as i64);
     let a = _mm512_set1_epi64(0x1234_5678_9ABC_DEF0i64);
     let b = _mm512_set1_epi64(0x0FED_CBA9_8765_4321i64);
@@ -47,7 +45,6 @@ unsafe fn probe_madd52_throughput() {
     let mut acc6 = _mm512_setzero_si512();
     let mut acc7 = _mm512_setzero_si512();
 
-    // Warmup.
     for _ in 0..1000 {
         acc0 = _mm512_madd52lo_epu64(acc0, a_lo, b_lo);
     }
@@ -73,7 +70,7 @@ unsafe fn probe_madd52_throughput() {
     }
     let elapsed = t0.elapsed();
 
-    // Use the accumulators to prevent dead-code elimination.
+    // consume, else DCE removes the loop
     let accs = [acc0, acc1, acc2, acc3, acc4, acc5, acc6, acc7];
     std::hint::black_box(accs);
 
@@ -109,7 +106,6 @@ fn scalar_mulx_throughput_probe() {
     let mut acc6 = 1u128;
     let mut acc7 = 1u128;
 
-    // Warmup.
     for _ in 0..1000 {
         acc0 = acc0.wrapping_add((a as u128) * (b as u128));
     }

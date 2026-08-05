@@ -1,53 +1,11 @@
-//! Modular arithmetic over Z_q.
-//!
-//! Provides efficient modular operations using Montgomery reduction for
-//! fast multiplication without expensive division operations.
-//!
-//! # Montgomery Representation
-//!
-//! Values are stored in Montgomery form: `a_mont = a * R mod q` where `R = 2^64`.
-//! This allows multiplication to be performed as:
-//!
-//! ```text
-//! (a * b) mod q = montgomery_reduce(a_mont * b_mont)
-//! ```
-//!
-//! The Montgomery reduction avoids division by using precomputed constants.
-//!
-//! # Example
-//!
-//! ```
-//! use raven_inspire::math::mod_q::{ModQ, DEFAULT_Q};
-//!
-//! let a = ModQ::new(100, DEFAULT_Q);
-//! let b = ModQ::new(200, DEFAULT_Q);
-//!
-//! let sum = a + b;
-//! assert_eq!(sum.value(), 300);
-//!
-//! let product = a * b;
-//! assert_eq!(product.value(), 20000);
-//! ```
+//! Z_q arithmetic in Montgomery form `a * R mod q`, R = 2^64.
 
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-/// Default modulus q = 2^60 - 2^14 + 1 (NTT-friendly prime).
-///
-/// This prime satisfies q ≡ 1 (mod 4096), enabling NTT for ring dimensions up to 2048.
+/// q = 2^60 - 2^14 + 1; prime, q = 1 mod 4096, so NTT supports ring_dim up to 2048.
 pub const DEFAULT_Q: u64 = 1152921504606830593;
 
-/// Element of Z_q with Montgomery representation for fast multiplication.
-///
-/// Stores values in Montgomery form for efficient modular multiplication.
-/// The Montgomery representation avoids expensive division operations by
-/// using precomputed constants.
-///
-/// # Fields
-///
-/// * `value` - Value in Montgomery form: a * R mod q, where R = 2^64
-/// * `q` - The modulus q
-/// * `q_inv_neg` - -q^(-1) mod 2^64 for Montgomery reduction
-/// * `r_squared` - R^2 mod q for converting to Montgomery form
+/// Element of Z_q carrying its own Montgomery constants.
 ///
 /// # Example
 ///
@@ -61,30 +19,14 @@ pub const DEFAULT_Q: u64 = 1152921504606830593;
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModQ {
-    /// Value in Montgomery form: a * R mod q, where R = 2^64.
     value: u64,
-    /// The modulus q.
     q: u64,
-    /// -q^(-1) mod 2^64 for Montgomery reduction.
     q_inv_neg: u64,
-    /// R^2 mod q for converting to Montgomery form.
     r_squared: u64,
 }
 
 impl ModQ {
-    /// Creates a new `ModQ` element for a given value and modulus.
-    ///
-    /// The value is automatically converted to Montgomery form for efficient
-    /// subsequent operations.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - The value in standard representation (0 to q-1)
-    /// * `q` - The modulus
-    ///
-    /// # Returns
-    ///
-    /// A new `ModQ` element with the value stored in Montgomery form.
+    /// Lifts `value` (standard representation) into Montgomery form.
     ///
     /// # Example
     ///
@@ -107,15 +49,7 @@ impl ModQ {
         result
     }
 
-    /// Creates a new `ModQ` element with the default modulus.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - The value in standard representation
-    ///
-    /// # Returns
-    ///
-    /// A new `ModQ` element using `DEFAULT_Q` as the modulus.
+    /// [`Self::new`] against [`DEFAULT_Q`].
     ///
     /// # Example
     ///
@@ -129,51 +63,27 @@ impl ModQ {
         Self::new(value, DEFAULT_Q)
     }
 
-    /// Creates the zero element for a given modulus.
-    ///
-    /// # Arguments
-    ///
-    /// * `q` - The modulus
-    ///
-    /// # Returns
-    ///
-    /// The additive identity element (0) in Z_q.
+    /// Additive identity in Z_q.
     pub fn zero(q: u64) -> Self {
         Self::new(0, q)
     }
 
-    /// Creates the one element for a given modulus.
-    ///
-    /// # Arguments
-    ///
-    /// * `q` - The modulus
-    ///
-    /// # Returns
-    ///
-    /// The multiplicative identity element (1) in Z_q.
+    /// Multiplicative identity in Z_q.
     pub fn one(q: u64) -> Self {
         Self::new(1, q)
     }
 
-    /// Returns the underlying value converted from Montgomery form.
-    ///
-    /// # Returns
-    ///
-    /// The value in standard representation (0 to q-1).
+    /// Standard representation, in `0..q`.
     pub fn value(&self) -> u64 {
         self.montgomery_reduce(self.value)
     }
 
-    /// Returns the modulus q.
-    ///
-    /// # Returns
-    ///
-    /// The modulus used for this element.
+    /// The modulus q.
     pub fn modulus(&self) -> u64 {
         self.q
     }
 
-    /// Compute -q^(-1) mod 2^64 using extended Euclidean algorithm
+    /// -q^(-1) mod 2^64.
     fn compute_q_inv_neg(q: u64) -> u64 {
         let mut y: u64 = 1;
         for i in 1..64 {
@@ -183,23 +93,21 @@ impl ModQ {
         y.wrapping_neg()
     }
 
-    /// Compute R^2 mod q where R = 2^64
+    /// R^2 mod q, R = 2^64.
     fn compute_r_squared(q: u64) -> u64 {
         let r_mod_q = (1u128 << 64) % (q as u128);
         ((r_mod_q * r_mod_q) % (q as u128)) as u64
     }
 
-    /// Convert to Montgomery form: a -> a * R mod q
     fn to_montgomery(self, a: u64) -> u64 {
         self.montgomery_mul(a, self.r_squared)
     }
 
-    /// Convert from Montgomery form: a * R -> a
     fn montgomery_reduce(self, a: u64) -> u64 {
         self.montgomery_mul(a, 1)
     }
 
-    /// Montgomery multiplication: (a * b * R^(-1)) mod q
+    /// (a * b * R^(-1)) mod q.
     fn montgomery_mul(&self, a: u64, b: u64) -> u64 {
         let ab = (a as u128) * (b as u128);
         let m = ((ab as u64).wrapping_mul(self.q_inv_neg)) as u128;
@@ -211,17 +119,7 @@ impl ModQ {
         }
     }
 
-    /// Computes modular exponentiation using square-and-multiply.
-    ///
-    /// Efficiently computes `self^exp mod q` in O(log exp) multiplications.
-    ///
-    /// # Arguments
-    ///
-    /// * `exp` - The exponent
-    ///
-    /// # Returns
-    ///
-    /// The result of `self^exp mod q`.
+    /// `self^exp mod q` by square-and-multiply; not constant-time in `exp`.
     ///
     /// # Example
     ///
@@ -251,13 +149,7 @@ impl ModQ {
         result
     }
 
-    /// Computes the modular inverse using Fermat's little theorem.
-    ///
-    /// For prime q, computes `a^(-1) = a^(q-2) mod q`.
-    ///
-    /// # Returns
-    ///
-    /// `Some(inverse)` if the value is non-zero, `None` if the value is zero.
+    /// `a^(q-2) mod q` by Fermat; `None` for zero. Requires prime q.
     ///
     /// # Example
     ///
@@ -426,7 +318,7 @@ mod tests {
     fn test_pow_large() {
         let base = ModQ::new(3, Q);
         let result = base.pow(Q - 1);
-        assert_eq!(result.value(), 1); // Fermat's little theorem
+        assert_eq!(result.value(), 1);
     }
 
     #[test]

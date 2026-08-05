@@ -519,8 +519,7 @@ impl CostEstimator {
         };
 
         let query_bytes = match self.variant {
-            InspireVariant::NoPacking => query_bytes_full,
-            InspireVariant::OnePacking => query_bytes_full,
+            InspireVariant::NoPacking | InspireVariant::OnePacking => query_bytes_full,
             InspireVariant::TwoPacking => query_bytes_seeded + packing_key_bytes,
         };
 

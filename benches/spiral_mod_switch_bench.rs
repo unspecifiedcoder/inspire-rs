@@ -1,31 +1,18 @@
-//! Spiral mod-switching bench: response wire-bytes BEFORE vs AFTER.
+//! Response wire-bytes with and without mod-switching, at the production cell
+//! of 65536 entries x 512 B and d = 2048, median over three seeds.
 //!
-//! Locked production cell shape (M005): 65,536 entries x 512 B at
-//! `d = 2048`, single-CRT `q = DEFAULT_Q ≈ 2^60`, InsPIRe^2
-//! (TwoPacking + InspiRING + seeded query + sticky session). The
-//! bench builds a single shard of the locked shape (matches the
-//! per-shard layout) then exercises the full
-//! query → respond_seeded_inspiring → mod_switch → encode_packed
-//! pipeline three times with three independent seeds, reporting
-//! the median wire-byte count.
+//! Custom harness rather than criterion: wire-bytes is a deterministic count,
+//! not a wall-clock distribution, so criterion's overhead would dwarf the run.
+//! Output goes to stderr for `grep WIRE_BYTES_RESULT`.
 //!
-//! # Why a custom harness instead of criterion
-//!
-//! The metric here is wire-bytes (a deterministic measurement, not
-//! a wall-clock distribution). Three seeds suffice (per M005's
-//! three-seed methodology) and the criterion overhead would dwarf
-//! the bench. Output is plain stderr so an operator can `grep
-//! WIRE_BYTES_RESULT` from a CI log.
-//!
-//! # Pass criteria
-//!
-//! - Mod-switched + tightly-encoded response wire-bytes <= 80% of
-//!   the bincode baseline (>= 20% reduction). Target was 25%; some
-//!   slack is allowed for serializer overhead.
-//! - Decryption roundtrip recovers the original entry byte-for-byte
-//!   under all three seeds. Wire-bytes savings without correctness
-//!   are not a savings — bench BAILS HONESTLY if any seed fails to
-//!   decrypt.
+//! Passes when the encoded response is <= 80% of the bincode baseline and every
+//! seed still decrypts to the planted entry; a size win without correctness is
+//! not a win.
+
+#![allow(
+    clippy::expect_used,
+    reason = "test-target fixture helpers; an abort here is the failure report"
+)]
 
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 
@@ -47,7 +34,7 @@ const SEEDS: [u64; 3] = [
 fn run_one_seed(seed: u64) -> SeedResult {
     let mut rng = StdRng::seed_from_u64(seed);
     let params = InspireParams::secure_128_d2048();
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
     let num_entries = params.ring_dim;
     let mut database = vec![0u8; num_entries * ENTRY_SIZE];
@@ -56,7 +43,7 @@ fn run_one_seed(seed: u64) -> SeedResult {
     let (crs, encoded_db, rlwe_sk) =
         setup(&params, &database, ENTRY_SIZE, &mut sampler).expect("setup");
 
-    let target_index = (rng.next_u64() % (num_entries as u64)) as u64;
+    let target_index = rng.next_u64() % (num_entries as u64);
     let (state, query) = query_seeded(
         &crs,
         target_index,
@@ -119,10 +106,7 @@ fn main() {
         InspireParams::secure_128_d2048().ring_dim,
         ENTRY_SIZE
     );
-    eprintln!(
-        "Mod-switch target: 0x{:x} (45-bit NTT-friendly prime)",
-        MOD_SWITCH_TARGET_45BIT
-    );
+    eprintln!("Mod-switch target: 0x{MOD_SWITCH_TARGET_45BIT:x} (45-bit NTT-friendly prime)");
     eprintln!();
 
     let mut results = Vec::new();
@@ -163,29 +147,22 @@ fn main() {
 
     eprintln!();
     eprintln!("=== 3-seed median results ===");
+    eprintln!("baseline (bincode of unswitched ServerResponse): {baseline_med} bytes");
     eprintln!(
-        "baseline (bincode of unswitched ServerResponse): {} bytes",
-        baseline_med
+        "switched (bincode of mod-switched ServerResponse): {switched_bincode_med} bytes ({bincode_reduction:.2}% reduction)"
     );
     eprintln!(
-        "switched (bincode of mod-switched ServerResponse): {} bytes ({:.2}% reduction)",
-        switched_bincode_med, bincode_reduction
-    );
-    eprintln!(
-        "switched (encode_response_packed tight serializer):  {} bytes ({:.2}% reduction)",
-        switched_packed_med, packed_reduction
+        "switched (encode_response_packed tight serializer):  {switched_packed_med} bytes ({packed_reduction:.2}% reduction)"
     );
     eprintln!();
 
     println!(
-        "WIRE_BYTES_RESULT baseline={} switched_bincode={} switched_packed={} bincode_reduction_pct={:.4} packed_reduction_pct={:.4}",
-        baseline_med, switched_bincode_med, switched_packed_med, bincode_reduction, packed_reduction
+        "WIRE_BYTES_RESULT baseline={baseline_med} switched_bincode={switched_bincode_med} switched_packed={switched_packed_med} bincode_reduction_pct={bincode_reduction:.4} packed_reduction_pct={packed_reduction:.4}"
     );
 
     if packed_reduction < 20.0 {
         eprintln!(
-            "FAIL: packed_reduction ({:.2}%) < 20% target. M015 honest stop.",
-            packed_reduction
+            "FAIL: packed_reduction ({packed_reduction:.2}%) < 20% target. M015 honest stop."
         );
         std::process::exit(1);
     }

@@ -1,31 +1,7 @@
-//! RGSW (Ring-GSW) encryption module
+//! RGSW encryption: a `2*ell x 2` matrix of RLWE rows over the gadget powers.
 //!
-//! This module implements RGSW encryption, which enables homomorphic
-//! multiplication of RLWE ciphertexts via the external product operation.
-//!
-//! # Overview
-//!
-//! RGSW is based on the GSW (Gentry-Sahai-Waters) scheme over polynomial rings.
-//! An RGSW ciphertext encrypting message m is a 2ℓ × 2 matrix where:
-//! - Each row is an RLWE ciphertext
-//! - The gadget vector g = [1, z, z², ..., z^(ℓ-1)]^T allows decomposition
-//!
-//! # External Product
-//!
-//! The key operation is RLWE(m₀) ⊡ RGSW(m₁) → RLWE(m₀·m₁), which enables:
-//! - Homomorphic multiplication by encrypted constants
-//! - Selection operations in PIR queries
-//!
-//! # Example
-//!
-//! ```ignore
-//! use raven_inspire::rgsw::{RgswCiphertext, GadgetVector, external_product};
-//! use raven_inspire::rlwe::RlweCiphertext;
-//!
-//! let gadget = GadgetVector::new(1 << 20, 3, q);
-//! let rgsw_ct = RgswCiphertext::encrypt(...);
-//! let result = external_product(&rlwe_ct, &rgsw_ct, &ctx);
-//! ```
+//! Its point is the external product `RLWE(m0) x RGSW(m1) -> RLWE(m0*m1)`, which
+//! multiplies by an encrypted value with controlled noise growth.
 
 mod external_product;
 mod types;

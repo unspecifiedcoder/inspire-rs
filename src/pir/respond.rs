@@ -1,15 +1,5 @@
-//! PIR Respond: Server response computation
-//!
-//! Implements PIR.Respond(crs, D', query) → response
-//!
-//! # Direct Coefficient Retrieval via Rotation
-//!
-//! The database polynomial h(X) stores values as coefficients: h(X) = Σ y_k · X^k
-//! The client sends RGSW(X^(-k)) (the inverse monomial for target index k).
-//!
-//! The server computes: RLWE(h(X)) ⊡ RGSW(X^(-k)) = RLWE(h(X) · X^(-k))
-//!
-//! This rotation brings y_k to coefficient 0 of the result polynomial.
+//! PIR.Respond: the external product RLWE(h) * RGSW(X^(-k)) rotates the target value
+//! into coefficient 0.
 
 use crate::par_prelude::*;
 use serde::{Deserialize, Serialize};
@@ -24,63 +14,34 @@ use super::error::{pir_err, Result};
 use super::query::{ClientQuery, PackingMode, SeededClientQuery};
 use super::setup::{EncodedDatabase, ServerCrs};
 
-/// Server response containing RLWE ciphertexts for each column
+/// Server response: the packed ciphertext, or one ciphertext per column.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServerResponse {
-    /// RLWE ciphertext encrypting the retrieved entry
-    /// For multi-column entries, this contains one ciphertext per column
+    /// Packed result, or the sum of the column ciphertexts when unpacked.
     pub ciphertext: RlweCiphertext,
-    /// Per-column ciphertexts (for proper multi-column extraction)
+    /// Populated only on the unpacked path.
     pub column_ciphertexts: Vec<RlweCiphertext>,
-    /// Packing format the responder used, so extractors can dispatch
-    /// correctly between InspiRING (unscaled coefficients) and
-    /// tree-packed (d-scaled) without asking the caller. Pre-fork code
-    /// had callers track this out-of-band, which caused a silent
-    /// wrong-bytes failure under the TwoPacking variant.
+    /// Lets the extractor tell unscaled InspiRING output from d-scaled tree output.
     ///
-    /// `#[serde(default)]` alone (not paired with `skip_serializing_if`):
-    /// bincode is positional, so skipping None on serialize leaves the
-    /// deserializer reading the next field positionally and hitting
-    /// unexpected-EOF. Always serialize the discriminant, even when
-    /// None. Self-describing formats (JSON) keep the semantics via
-    /// serde(default); legacy bincode payloads without the field still
-    /// fail fast rather than silently decoding a wrong packing mode.
+    /// Never `skip_serializing_if`: bincode is positional, so an omitted field
+    /// shifts every later read.
     #[serde(default)]
     pub packing_mode: Option<PackingMode>,
 }
 
 impl ServerResponse {
-    /// Serialize to compact binary format (bincode)
-    ///
-    /// Typically ~58% smaller than JSON (544 KB vs 1,296 KB for 17 ciphertexts)
+    /// Serialize to bincode.
     pub fn to_binary(&self) -> Result<Vec<u8>> {
         bincode::serialize(self).map_err(|e| pir_err!("bincode serialize failed: {}", e))
     }
 
-    /// Deserialize from compact binary format (bincode)
+    /// Deserialize from bincode.
     pub fn from_binary(bytes: &[u8]) -> Result<Self> {
         bincode::deserialize(bytes).map_err(|e| pir_err!("bincode deserialize failed: {}", e))
     }
 }
 
-/// PIR.Respond(crs, D', query) → response
-///
-/// Computes the PIR response using homomorphic rotation (parallel version).
-///
-/// # Algorithm
-/// 1. For each database polynomial h(X) (one per column):
-///    - Create trivial RLWE encryption of h(X)
-///    - Compute external product: RLWE(h) ⊡ RGSW(X^(-k)) = RLWE(h · X^(-k))
-///    - The target value is now at coefficient 0
-/// 2. Return encrypted column values
-///
-/// # Arguments
-/// * `crs` - Common reference string (public parameters)
-/// * `encoded_db` - Pre-encoded database (polynomials with values as coefficients)
-/// * `query` - Client's PIR query containing RGSW encryption of X^(-k)
-///
-/// # Returns
-/// Server response containing encrypted entry value
+/// Respond with one RLWE ciphertext per column, in parallel.
 pub fn respond(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -104,21 +65,13 @@ pub fn respond(
         });
     }
 
-    // Pre-NTT the RGSW rows once before the par_iter and accumulate
-    // in NTT domain via `external_product_with_ntt_rgsw`. RGSW is
-    // constant across the shard's columns so the forward NTTs amortize.
-    // Byte-identical to the classical path (tests/external_product_ntt_kat.rs).
+    // RGSW is constant across a shard's columns, so its forward NTTs amortize.
     let rgsw_ntt_rows = rgsw_rows_to_ntt(&query.rgsw_ciphertext, &ctx);
     let rgsw_gadget = &query.rgsw_ciphertext.gadget;
     let column_ciphertexts: Vec<RlweCiphertext> = shard
         .polynomials
         .par_iter()
         .map(|db_poly| {
-            // NttContext is hoisted out of the par_iter so each
-            // worker shares the read-only Montgomery + twiddle tables
-            // instead of allocating a fresh one per shard polynomial.
-            // (Safe: NttContext fields are all read-only Vecs;
-            // clone-or-share under rayon is OK.)
             let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
             external_product_with_ntt_rgsw(&rlwe_db, &rgsw_ntt_rows, rgsw_gadget, &ctx)
         })
@@ -140,18 +93,7 @@ pub fn respond(
     })
 }
 
-/// PIR.Respond with explicit variant selection
-///
-/// Allows selecting between different InsPIRe protocol variants.
-///
-/// # Variants
-/// - `NoPacking` (InsPIRe^0): One RLWE per column, simplest
-/// - `OnePacking` (InsPIRe^1): Packed response (single RLWE ciphertext)
-/// - `TwoPacking` (InsPIRe^2): Packed response intended for seeded queries
-///
-/// # Packing Algorithm Selection
-/// - Default: InspiRING (requires client packing keys)
-/// - Tree packing is only used when explicitly requested
+/// Respond under an explicit variant. Tree packing runs only when asked for.
 pub fn respond_with_variant(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -171,15 +113,8 @@ pub fn respond_with_variant(
             }
             PackingMode::Tree => respond_one_packing(crs, encoded_db, query),
         },
-        // Raven-local patch: the pre-fork code silently routed
-        // TwoPacking through the OnePacking responder, then
-        // `extract_with_variant(TwoPacking)` decoded a mismatched
-        // format, producing semantically wrong plaintext with no
-        // error surfacing at runtime. TwoPacking's canonical path is
-        // the seeded pipeline; callers must go through
-        // `respond_seeded_with_variant` (or the direct
-        // `respond_seeded_inspiring` / `respond_seeded_packed`
-        // entrypoints).
+        // Refused rather than routed through OnePacking: the extractor would decode a
+        // mismatched format and return wrong plaintext with no error.
         InspireVariant::TwoPacking => Err(pir_err!(
             "respond_with_variant(TwoPacking) is not supported on an unseeded \
              ClientQuery: TwoPacking requires the seeded pipeline \
@@ -189,14 +124,7 @@ pub fn respond_with_variant(
     }
 }
 
-/// PIR.Respond with seeded query and explicit variant selection
-///
-/// This is the recommended entry point for InsPIRe^2 (seeded + packed).
-///
-/// # Variants
-/// - `NoPacking` (InsPIRe^0): Seeded query, unpacked response
-/// - `OnePacking` (InsPIRe^1): Seeded query, packed response
-/// - `TwoPacking` (InsPIRe^2): Seeded query, packed response (no switching)
+/// Respond to a seeded query under an explicit variant.
 pub fn respond_seeded_with_variant(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -219,34 +147,10 @@ pub fn respond_seeded_with_variant(
     }
 }
 
-/// PIR.Respond using coefficient packing (InsPIRe^1)
+/// Respond with one tree-packed ciphertext holding column k at coefficient k.
 ///
-/// Packs multiple column values into a single RLWE ciphertext using automorphism-based
-/// tree packing. Column k's value appears in coefficient k of the packed result.
-///
-/// # Algorithm
-/// 1. Compute external product for each column (same as NoPacking)
-/// 2. Extract LWE from coefficient 0 of each column RLWE
-/// 3. Convert each LWE to RLWE form (trivial embedding)
-/// 4. Pack all RLWEs using automorphism-based tree packing
-///
-/// # Why tree packing is needed
-/// After external product, each column RLWE contains ALL d database values (rotated).
-/// Only coefficient 0 contains the target entry's column value. Simple "shift and add"
-/// fails because key-switched RLWEs have noise in ALL coefficients.
-///
-/// The automorphism-based tree packing uses Galois automorphisms to properly combine
-/// values while maintaining the encryption structure.
-///
-/// # Advantages
-/// - Single RLWE ciphertext instead of one per column
-/// - Reduces response size by factor of num_columns
-/// - Client extracts all column values from one decryption
-///
-/// # Arguments
-/// * `crs` - Common reference string (must have galois_keys set)
-/// * `encoded_db` - Pre-encoded database
-/// * `query` - Client's PIR query
+/// Requires `crs.galois_keys`. Shift-and-add cannot replace the automorphism tree:
+/// a key-switched RLWE carries noise in every coefficient, not just the target one.
 pub fn respond_one_packing(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -274,68 +178,37 @@ pub fn respond_one_packing(
         });
     }
 
-    // Step 1: Compute external product for each column (parallel)
-    // After external product, each RLWE has the target value at coefficient 0
-    // All other coefficients contain rotated database values
-    //
-    // Pre-NTT RGSW once + NTT-domain accumulation. RGSW is constant
-    // across the shard columns; amortizes the forward NTTs.
     let rgsw_ntt_rows = rgsw_rows_to_ntt(&query.rgsw_ciphertext, &ctx);
     let rgsw_gadget = &query.rgsw_ciphertext.gadget;
     let column_ciphertexts: Vec<RlweCiphertext> = shard
         .polynomials
         .par_iter()
         .map(|db_poly| {
-            // NttContext is hoisted out of the par_iter so each
-            // worker shares the read-only Montgomery + twiddle tables
-            // instead of allocating a fresh one per shard polynomial.
-            // (Safe: NttContext fields are all read-only Vecs;
-            // clone-or-share under rayon is OK.)
             let rlwe_db = RlweCiphertext::trivial_encrypt(db_poly, delta, &crs.params);
             external_product_with_ntt_rgsw(&rlwe_db, &rgsw_ntt_rows, rgsw_gadget, &ctx)
         })
         .collect();
 
-    // Step 2: Extract LWE from coefficient 0 of each column RLWE
-    // This isolates just the target entry's column value
     let lwe_cts: Vec<_> = column_ciphertexts
         .iter()
-        .map(|rlwe| rlwe.sample_extract_coeff0())
+        .map(crate::rlwe::RlweCiphertext::sample_extract_coeff0)
         .collect();
 
-    // Step 3: Pack LWEs using automorphism-based tree packing
-    // This places column k's value at coefficient k (scaled by d)
+    // Places column k at coefficient k, scaled by d.
     let packed = pack_lwes(&lwe_cts, &crs.galois_keys, &crs.params);
 
-    // For OnePacking, we DON'T send column_ciphertexts - that's the whole point!
-    // The packed ciphertext contains all column values at coefficients 0, 1, 2, ...
     Ok(ServerResponse {
         ciphertext: packed,
-        column_ciphertexts: vec![], // Empty - all data is in the packed ciphertext
+        column_ciphertexts: vec![],
         packing_mode: None,
     })
 }
 
-/// PIR.Respond using InspiRING 2-matrix packing (canonical implementation)
+/// Respond with InspiRING 2-matrix packing, roughly 35x faster online than the
+/// log(d)-matrix tree.
 ///
-/// Uses the canonical InspiRING algorithm with only 2 key-switching matrices
-/// instead of log(d) matrices for tree packing. This is **~35x faster** than
-/// tree packing for online computation (115 μs vs ~4 ms for d=2048, 16 LWEs).
-///
-/// # Algorithm
-/// 1. Compute external product for each column (same as tree packing)
-/// 2. Extract LWE from coefficient 0 of each RLWE
-/// 3. Pack using InspiRING: y_all × bold_t + b_poly (precomputed offline)
-///
-/// # Requirements
-/// - `crs.inspiring_packing_key` must be set (w_all rotations)
-///
-/// The per-query `packing_offline` is computed inline below from
-/// `crs.inspiring_w_seed` + the response column ciphertexts because
-/// the InspiRING a-vectors used by the offline phase are query-derived
-/// (a function of the RGSW input), not CRS-static. A setup-time
-/// global precomp would be the wrong shape and is intentionally NOT
-/// kept on `ServerCrs`.
+/// `packing_offline` runs per query, not at setup: its a-vectors are derived from
+/// the RGSW query, so a CRS-static precomputation would be the wrong shape.
 pub fn respond_inspiring(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -347,7 +220,6 @@ pub fn respond_inspiring(
     let delta = crs.params.delta();
     let ctx = crs.params.ntt_context();
 
-    // Get client packing keys (y_all or y_body) from query
     let client_packing_keys = query
         .inspiring_packing_keys
         .as_ref()
@@ -368,8 +240,6 @@ pub fn respond_inspiring(
         });
     }
 
-    // Step 1: Compute external product for each column (parallel).
-    // Pre-NTT RGSW once + accumulate in NTT domain.
     let rgsw_ntt_rows = rgsw_rows_to_ntt(&query.rgsw_ciphertext, &ctx);
     let rgsw_gadget = &query.rgsw_ciphertext.gadget;
     let column_ciphertexts: Vec<RlweCiphertext> = shard
@@ -381,10 +251,9 @@ pub fn respond_inspiring(
         })
         .collect();
 
-    // Step 2: Extract LWE from coefficient 0 of each RLWE
     let lwe_cts: Vec<_> = column_ciphertexts
         .iter()
-        .map(|rlwe| rlwe.sample_extract_coeff0())
+        .map(crate::rlwe::RlweCiphertext::sample_extract_coeff0)
         .collect();
 
     let num_columns = lwe_cts.len();
@@ -397,15 +266,13 @@ pub fn respond_inspiring(
         });
     }
 
-    // Step 3: Extract a-polynomials from RLWE ciphertexts for InspiRING offline phase
-    // Key insight: InspiRING uses RLWE a-polynomials directly, not the LWE a-vectors
-    // (LWE a-vectors are negacyclic extractions which have different structure)
+    // InspiRING consumes the RLWE a-polynomials, not the LWE a-vectors: the latter are
+    // negacyclic extractions with a different structure.
     let a_ct_tilde: Vec<Poly> = column_ciphertexts
         .iter()
         .map(|rlwe| rlwe.a.clone())
         .collect();
 
-    // Step 4: Build b_poly from LWE b values
     let mut b_coeffs = vec![0u64; d];
     for (i, lwe) in lwe_cts.iter().enumerate() {
         if i < d {
@@ -414,13 +281,12 @@ pub fn respond_inspiring(
     }
     let b_poly = Poly::from_coeffs_moduli(b_coeffs, crs.params.moduli());
 
-    // Step 5: Run InspiRING offline phase with actual LWE a-vectors
-    // This must be done per-query since a-vectors depend on the RGSW query
-    let pack_params = PackParams::new(&crs.params, num_columns);
+    let pack_params = PackParams::try_new(&crs.params, num_columns)
+        .map_err(|e| pir_err!("shard column count is not a legal InspiRING width: {e}"))?;
     let offline_keys = OfflinePackingKeys::generate(&pack_params, crs.inspiring_w_seed);
     let precomp = packing_offline(&pack_params, &offline_keys, &a_ct_tilde, &ctx);
 
-    // Step 6: Use client's y_all from query, or derive from y_body if omitted in wire format
+    // The wire format drops y_all, so re-derive it from y_body when absent.
     let derived_y_all = if client_packing_keys.y_all.is_empty() {
         if client_packing_keys.y_body.is_empty() {
             return Err(pir_err!(
@@ -438,12 +304,8 @@ pub fn respond_inspiring(
         .as_deref()
         .unwrap_or(&client_packing_keys.y_all);
 
-    // Step 7: Online packing using precomputed a_hat and bold_t with client's y_all
     let packed = packing_online(&precomp, y_all, &b_poly, &ctx);
 
-    // Tag the response with its packing mode so `extract_with_variant`
-    // can route correctly between InspiRING (unscaled coefficients)
-    // and tree-packed (d-scaled) formats without asking the caller.
     Ok(ServerResponse {
         ciphertext: packed,
         column_ciphertexts: vec![],
@@ -451,17 +313,10 @@ pub fn respond_inspiring(
     })
 }
 
-/// Server-side cache of InspiRING pack params + offline keys.
+/// Query-independent InspiRING pack params and offline keys, built once per CRS.
 ///
-/// `PackParams::new` (which runs an O(n³) automorph-tables search)
-/// and `OfflinePackingKeys::generate` are both query-independent;
-/// they depend only on `crs.params`, `num_columns`, and
-/// `crs.inspiring_w_seed`. Cache them once per CRS and feed into
-/// `respond_inspiring_cached`.
-///
-/// `num_columns` is derived from the first shard's polynomial
-/// count and is stable across all queries against one CRS (shard
-/// shape is set at setup time).
+/// Both depend only on `(crs.params, num_columns, crs.inspiring_w_seed)`, and
+/// `num_columns` is fixed by the shard shape chosen at setup.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServerInspiringCache {
     pack_params: crate::inspiring::PackParams,
@@ -469,19 +324,16 @@ pub struct ServerInspiringCache {
 }
 
 impl ServerInspiringCache {
-    /// Build the cache. Pay the one-time O(d³) cost here.
+    /// Build the cache, paying the one-time O(d^3) automorph-table search.
     pub fn new(crs: &ServerCrs, encoded_db: &EncodedDatabase) -> Result<Self> {
-        let num_columns = encoded_db
-            .shards
-            .first()
-            .map(|s| s.polynomials.len())
-            .unwrap_or(0);
+        let num_columns = encoded_db.shards.first().map_or(0, |s| s.polynomials.len());
         if num_columns == 0 {
             return Err(pir_err!(
                 "ServerInspiringCache::new: encoded_db has no shard polynomials"
             ));
         }
-        let pack_params = crate::inspiring::PackParams::new(&crs.params, num_columns);
+        let pack_params = crate::inspiring::PackParams::try_new(&crs.params, num_columns)
+            .map_err(|e| pir_err!("shard column count is not a legal InspiRING width: {e}"))?;
         let offline_keys =
             crate::inspiring::OfflinePackingKeys::generate(&pack_params, crs.inspiring_w_seed);
         Ok(Self {
@@ -490,21 +342,9 @@ impl ServerInspiringCache {
         })
     }
 
-    /// Reconstruct the cache from previously serialised parts without
-    /// re-running the offline packing phase.
-    ///
-    /// `pack_params` and `offline_keys` are pure functions of
-    /// `(crs.params, num_columns, crs.inspiring_w_seed)`; if a caller
-    /// has them on hand from a disk-backed cache, they may rebuild the
-    /// `ServerInspiringCache` directly with this constructor instead of
-    /// paying the `PackParams::new` automorph-table search and the
-    /// `OfflinePackingKeys::generate` rotation work that
-    /// [`ServerInspiringCache::new`] performs.
-    ///
-    /// The caller is responsible for verifying that the supplied parts
-    /// are consistent with the current CRS / encoded database (e.g. via
-    /// a hashed cell-shape fingerprint at the disk-cache layer); this
-    /// constructor performs no validation.
+    /// Rebuild from serialised parts, skipping the work [`ServerInspiringCache::new`]
+    /// performs. Validates nothing: the caller must confirm the parts match the
+    /// current CRS and encoded database.
     pub fn from_parts(
         pack_params: crate::inspiring::PackParams,
         offline_keys: crate::inspiring::OfflinePackingKeys,
@@ -515,8 +355,7 @@ impl ServerInspiringCache {
         }
     }
 
-    /// Borrow the cached pack params for callers that want them
-    /// separately (e.g. `generate_rotations`).
+    /// Borrow the cached pack params.
     pub fn pack_params(&self) -> &crate::inspiring::PackParams {
         &self.pack_params
     }
@@ -527,13 +366,8 @@ impl ServerInspiringCache {
     }
 }
 
-/// Variant of [`respond_inspiring`] that takes a pre-built
-/// [`ServerInspiringCache`] so per-query work skips
-/// `PackParams::new` + `OfflinePackingKeys::generate` (both O(d³)
-/// or O(d²) respectively in the brute-force pre-fork path).
-///
-/// The per-query `packing_offline` call still runs because its
-/// `a_ct_tilde` input is query-derived.
+/// [`respond_inspiring`] against a pre-built cache. `packing_offline` still runs per
+/// query because its `a_ct_tilde` input is query-derived.
 pub fn respond_inspiring_cached(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -566,7 +400,6 @@ pub fn respond_inspiring_cached(
         });
     }
 
-    // Pre-NTT RGSW once + accumulate in NTT domain.
     let rgsw_ntt_rows = rgsw_rows_to_ntt(&query.rgsw_ciphertext, &ctx);
     let rgsw_gadget = &query.rgsw_ciphertext.gadget;
     let column_ciphertexts: Vec<RlweCiphertext> = shard
@@ -580,7 +413,7 @@ pub fn respond_inspiring_cached(
 
     let lwe_cts: Vec<_> = column_ciphertexts
         .iter()
-        .map(|rlwe| rlwe.sample_extract_coeff0())
+        .map(crate::rlwe::RlweCiphertext::sample_extract_coeff0)
         .collect();
 
     let num_columns = lwe_cts.len();
@@ -606,9 +439,6 @@ pub fn respond_inspiring_cached(
     }
     let b_poly = Poly::from_coeffs_moduli(b_coeffs, crs.params.moduli());
 
-    // Cached: `pack_params` and `offline_keys` come from the cache
-    // instead of being rebuilt here. `packing_offline` still runs
-    // per-query because it consumes `a_ct_tilde`.
     let precomp = packing_offline(&cache.pack_params, &cache.offline_keys, &a_ct_tilde, &ctx);
 
     let derived_y_all = if client_packing_keys.y_all.is_empty() {
@@ -637,8 +467,7 @@ pub fn respond_inspiring_cached(
     })
 }
 
-/// Seeded sibling of [`respond_inspiring_cached`]. Expands the seeded
-/// query via `expand()` then delegates.
+/// Seeded sibling of [`respond_inspiring_cached`].
 pub fn respond_seeded_inspiring_cached(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -649,15 +478,8 @@ pub fn respond_seeded_inspiring_cached(
     respond_inspiring_cached(crs, encoded_db, &expanded, cache)
 }
 
-/// Handshake-aware variant of [`respond_inspiring_cached`]. Resolves
-/// the InspiRING client packing keys from a [`ServerSessionStore`]
-/// when the query carries a session handle; falls back to inlined
-/// `query.inspiring_packing_keys` when the handle is absent, which
-/// keeps the legacy wire format working for clients that have not
-/// adopted the handshake.
-///
-/// This is the compact wire-format entry point: queries that reference
-/// a handle drop their ~48 KiB `inspiring_packing_keys` payload.
+/// [`respond_inspiring_cached`] resolving packing keys from a session store when the
+/// query carries a handle, which lets it drop its ~48 KiB inline key payload.
 pub fn respond_inspiring_cached_with_session(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -671,9 +493,6 @@ pub fn respond_inspiring_cached_with_session(
     let delta = crs.params.delta();
     let ctx = crs.params.ntt_context();
 
-    // Resolve the packing keys: inlined from the query (pre-handshake)
-    // OR from the session store (handshake path). Exactly one must be
-    // present.
     let resolved_keys = match (&query.inspiring_packing_keys, query.session_handle) {
         (Some(inline), None) => PackingKeys::Inline(inline),
         (None, Some(handle)) => {
@@ -723,10 +542,7 @@ pub fn respond_inspiring_cached_with_session(
         });
     }
 
-    // Per-region timing gated behind the `RAVEN_PROFILE_RESPOND` env
-    // var. Zero overhead when off (single env-var read + branch per
-    // call). Set to any non-empty value to print a stderr breakdown
-    // after the call.
+    // Set RAVEN_PROFILE_RESPOND to any value for a per-region stderr breakdown.
     let profile = std::env::var_os("RAVEN_PROFILE_RESPOND").is_some();
     let t_extprod_start = if profile {
         Some(std::time::Instant::now())
@@ -734,15 +550,7 @@ pub fn respond_inspiring_cached_with_session(
         None
     };
 
-    // Pre-NTT the RGSW rows ONCE before the par_iter. RGSW is constant
-    // across all columns of a shard, so forward-NTT of its 2ℓ row
-    // polynomials was being paid per-column. Amortized pre-conversion
-    // saves (num_cols − 1) × 2ℓ × 2 forward NTTs per query. Combined
-    // with `external_product_with_ntt_rgsw` which accumulates in NTT
-    // form until a single pair of inverse NTTs at the end.
-    //
-    // Byte-identical to the classical path (verified in
-    // `tests/external_product_ntt_kat.rs`).
+    // RGSW is constant across a shard's columns, so its forward NTTs amortize.
     let rgsw_ntt = rgsw_rows_to_ntt(&query.rgsw_ciphertext, &ctx);
     let gadget = &query.rgsw_ciphertext.gadget;
 
@@ -761,7 +569,7 @@ pub fn respond_inspiring_cached_with_session(
 
     let lwe_cts: Vec<_> = column_ciphertexts
         .iter()
-        .map(|rlwe| rlwe.sample_extract_coeff0())
+        .map(crate::rlwe::RlweCiphertext::sample_extract_coeff0)
         .collect();
 
     let t_extract_end = t_extract_start.map(|s| s.elapsed());
@@ -818,16 +626,9 @@ pub fn respond_inspiring_cached_with_session(
         .as_deref()
         .unwrap_or(&client_packing_keys.y_all);
 
-    // Dispatch to `packing_online_fully_ntt` when the client packing
-    // keys already carry y_all_ntt (the in-process adapter case;
-    // wire-format deployments see y_all_ntt empty since it's
-    // `#[serde(skip)]`). The fully-NTT path skips per-call `to_ntt`
-    // on y_all + bold_t and runs pure pointwise multiply-accumulate
-    // inside the loop. Fall back to `packing_online` when y_all_ntt
-    // is empty.
-    //
-    // `RAVEN_FORCE_PACKING_ONLINE=1` forces the fallback branch so
-    // the wire-format delta can be measured. Zero cost when unset.
+    // y_all_ntt is `#[serde(skip)]`, so it is populated only in-process; when it is
+    // there the fully-NTT path avoids a per-call `to_ntt`. RAVEN_FORCE_PACKING_ONLINE
+    // pins the fallback so the wire-format delta can be measured.
     let force_packing_online = std::env::var_os("RAVEN_FORCE_PACKING_ONLINE").is_some();
     let packed = if !force_packing_online
         && !client_packing_keys.y_all_ntt.is_empty()
@@ -841,8 +642,7 @@ pub fn respond_inspiring_cached_with_session(
     let t_packonline_end = t_packonline_start.map(|s| s.elapsed());
 
     if profile {
-        // Emit as single-line CSV-ish record to stderr so a bench
-        // driver can grep/parse. Each field is microseconds.
+        // Microseconds per field.
         if let (Some(e), Some(x), Some(b), Some(po), Some(pn)) = (
             t_extprod_end,
             t_extract_end,
@@ -870,15 +670,14 @@ pub fn respond_inspiring_cached_with_session(
     })
 }
 
-/// Tiny wrapper that lets us hold either a borrowed reference to
-/// inlined packing keys OR an owned `Arc` from the session store
-/// without cloning the ~48 KiB payload in the inlined path.
+/// Holds inlined keys by reference or store-resolved keys by `Arc`, so neither path
+/// clones the ~48 KiB payload.
 enum PackingKeys<'a> {
     Inline(&'a crate::inspiring::ClientPackingKeys),
     Owned(std::sync::Arc<crate::inspiring::ClientPackingKeys>),
 }
 
-impl<'a> PackingKeys<'a> {
+impl PackingKeys<'_> {
     fn as_ref(&self) -> &crate::inspiring::ClientPackingKeys {
         match self {
             PackingKeys::Inline(k) => k,
@@ -887,8 +686,7 @@ impl<'a> PackingKeys<'a> {
     }
 }
 
-/// Seeded sibling of [`respond_inspiring_cached_with_session`]. Same
-/// handshake semantics; expands the seeded RGSW then delegates.
+/// Seeded sibling of [`respond_inspiring_cached_with_session`].
 pub fn respond_seeded_inspiring_cached_with_session(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -900,9 +698,7 @@ pub fn respond_seeded_inspiring_cached_with_session(
     respond_inspiring_cached_with_session(crs, encoded_db, &expanded, cache, session_store)
 }
 
-/// PIR.Respond with seeded query using InspiRING packing
-///
-/// Combines seeded query (50% query reduction) with InspiRING packing (~35x faster).
+/// Seeded sibling of [`respond_inspiring`].
 pub fn respond_seeded_inspiring(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -912,14 +708,7 @@ pub fn respond_seeded_inspiring(
     respond_inspiring(crs, encoded_db, &expanded)
 }
 
-/// PIR.Respond with seeded query (InsPIRe^2 query compression)
-///
-/// Expands the seeded query and processes it. Use with OnePacking/TwoPacking
-/// for full InsPIRe^2 experience.
-///
-/// # Query Size Comparison (d=2048, ℓ=3)
-/// - Full query: ~196 KB
-/// - Seeded query: ~98 KB (50% reduction)
+/// Seeded sibling of [`respond`].
 pub fn respond_seeded(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -929,17 +718,8 @@ pub fn respond_seeded(
     respond(crs, encoded_db, &expanded)
 }
 
-/// PIR.Respond with seeded query using OnePacking (InsPIRe^2 response path)
-///
-/// Full InsPIRe^2: seeded query (50% query reduction) + packed response (16x response reduction).
-/// This is the production path used to avoid modulus switching while keeping
-/// responses packed.
-///
-/// # Algorithm Notes
-/// 1. Expand the seeded RGSW query into a full `ClientQuery`.
-/// 2. Compute per-column RLWE responses via external product.
-/// 3. Pack the column LWEs into a single RLWE ciphertext (tree packing).
-/// 4. Return the packed ciphertext (no per-column ciphertexts).
+/// Seeded sibling of [`respond_one_packing`]; keeps responses packed without
+/// modulus switching.
 pub fn respond_seeded_packed(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -949,10 +729,7 @@ pub fn respond_seeded_packed(
     respond_one_packing(crs, encoded_db, &expanded)
 }
 
-/// Sequential respond using homomorphic rotation
-///
-/// Same as `respond` but processes columns sequentially.
-/// Useful for benchmarking parallel vs sequential performance.
+/// [`respond`] with the columns walked sequentially, for parallel-vs-serial benchmarks.
 pub fn respond_sequential(
     crs: &ServerCrs,
     encoded_db: &EncodedDatabase,
@@ -978,8 +755,6 @@ pub fn respond_sequential(
         });
     }
 
-    // Pre-NTT RGSW once before the sequential loop. Same NTT count
-    // reduction as the par_iter variants.
     let rgsw_ntt_rows = rgsw_rows_to_ntt(&query.rgsw_ciphertext, &ctx);
     let rgsw_gadget = &query.rgsw_ciphertext.gadget;
     let mut column_ciphertexts = Vec::with_capacity(shard.polynomials.len());
@@ -1028,7 +803,7 @@ mod tests {
     #[test]
     fn test_respond_produces_valid_ciphertext() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim;
@@ -1059,7 +834,7 @@ mod tests {
     #[test]
     fn test_respond_invalid_shard() {
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 32;
         let num_entries = params.ring_dim;
@@ -1109,21 +884,14 @@ mod tests {
         assert_eq!(combined.b.coeff(0), 300);
     }
 
-    // Pre-fork OnePacking tests below depended on the legacy
-    // `extract_packed` silent `d_inv = 1` fallback (d=256, p=65536 →
-    // gcd != 1). The typed `ExtractError::DegreeNotInvertible` surface
-    // now correctly refuses that combination. These tests are ignored
-    // because they document upstream's d-scaled OnePacking behavior on
-    // an invalid parameter set; the shipping config (d=2048, p=65537)
-    // satisfies gcd == 1 so the production path is unaffected.
     #[test]
-    #[ignore = "tree-packed extract requires gcd(d, p) == 1; legacy fixture (d=256, p=65536) violates the invariant — typed ExtractError::DegreeNotInvertible is the correct outcome"]
+    #[ignore = "tree-packed extract requires gcd(d, p) == 1; this fixture (d=256, p=65536) violates it, so ExtractError::DegreeNotInvertible is the correct outcome"]
     fn test_respond_one_packing_correctness() {
         use crate::params::InspireVariant;
         use crate::pir::extract_with_variant;
 
         let params = test_params();
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
         let entry_size = 64;
         let num_entries = params.ring_dim;
@@ -1134,7 +902,6 @@ mod tests {
         let (crs, encoded_db, rlwe_sk) =
             setup(&params, &database, entry_size, &mut sampler).unwrap();
 
-        // Test multiple indices
         for target_index in [0u64, 1, 42] {
             let (state, client_query) = query(
                 &crs,
@@ -1145,27 +912,21 @@ mod tests {
             )
             .unwrap();
 
-            // Get NoPacking response for reference
             let response_no_pack = respond(&crs, &encoded_db, &client_query).unwrap();
             let extracted_no_pack =
                 crate::pir::extract(&crs, &state, &response_no_pack, entry_size).unwrap();
 
-            // Expected entry
             let expected_start = (target_index as usize) * entry_size;
             let expected = &database[expected_start..expected_start + entry_size];
 
-            // Verify NoPacking works
             assert_eq!(
                 extracted_no_pack.as_slice(),
                 expected,
-                "NoPacking should work for index {}",
-                target_index
+                "NoPacking should work for index {target_index}"
             );
 
-            // OnePacking currently has a limitation: d * column_value must be < p
-            // With d=256 and p=65536, column values must be < 256 (8-bit)
-            // This test uses 16-bit column values, so OnePacking won't work correctly
-            // TODO: Implement proper OnePacking that handles this constraint
+            // Tree packing needs d * column_value < p, which 16-bit columns break at
+            // d=256, p=65536, so only the length is asserted below.
             let response_one_pack = respond_one_packing(&crs, &encoded_db, &client_query).unwrap();
             let extracted_one_pack = extract_with_variant(
                 &crs,
@@ -1176,39 +937,32 @@ mod tests {
             )
             .unwrap();
 
-            // For now, just verify OnePacking produces a result (may not be correct)
             assert_eq!(
                 extracted_one_pack.len(),
                 entry_size,
-                "OnePacking should produce correct size for index {}",
-                target_index
+                "OnePacking should produce correct size for index {target_index}"
             );
         }
     }
 
     #[test]
-    #[ignore = "tree-packed extract requires gcd(d, p) == 1; legacy fixture (d=256, p=65536) violates the invariant — typed ExtractError::DegreeNotInvertible is the correct outcome"]
+    #[ignore = "tree-packed extract requires gcd(d, p) == 1; this fixture (d=256, p=65536) violates it, so ExtractError::DegreeNotInvertible is the correct outcome"]
     fn test_respond_one_packing_small_values() {
-        // Test OnePacking with small column values (< 256) to avoid d-scaling overflow
         use crate::params::InspireVariant;
         use crate::pir::extract_with_variant;
 
         let params = test_params();
         let d = params.ring_dim;
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
-        // Use 2-byte entries with values < 256/d = 1 per byte
-        // Actually, column value = low_byte + high_byte*256
-        // For d*column_value < p, we need column_value < p/d = 65536/256 = 256
-        // So low_byte + high_byte*256 < 256, meaning high_byte must be 0
-        let entry_size = 2; // 1 column = 2 bytes
+        // d * column_value must stay under p, so the high byte is pinned to 0.
+        let entry_size = 2;
         let num_entries = d;
 
-        // Create database with column values < 256 (high byte = 0)
         let database: Vec<u8> = (0..num_entries)
             .flat_map(|i| {
                 let low_byte = (i % 256) as u8;
-                let high_byte = 0u8; // Keep high byte 0 to ensure column_value < 256
+                let high_byte = 0u8;
                 vec![low_byte, high_byte]
             })
             .collect();
@@ -1216,7 +970,6 @@ mod tests {
         let (crs, encoded_db, rlwe_sk) =
             setup(&params, &database, entry_size, &mut sampler).unwrap();
 
-        // Test a few indices
         for target_index in [0u64, 1, 42, 100] {
             let (state, client_query) = query(
                 &crs,
@@ -1227,7 +980,6 @@ mod tests {
             )
             .unwrap();
 
-            // Get responses
             let response_no_pack = respond(&crs, &encoded_db, &client_query).unwrap();
             let extracted_no_pack =
                 crate::pir::extract(&crs, &state, &response_no_pack, entry_size).unwrap();
@@ -1242,22 +994,18 @@ mod tests {
             )
             .unwrap();
 
-            // Expected entry
             let expected_start = (target_index as usize) * entry_size;
             let expected = &database[expected_start..expected_start + entry_size];
 
-            // Verify both work
             assert_eq!(
                 extracted_no_pack.as_slice(),
                 expected,
-                "NoPacking should work for index {}",
-                target_index
+                "NoPacking should work for index {target_index}"
             );
             assert_eq!(
                 extracted_one_pack.as_slice(),
                 expected,
-                "OnePacking should work with small values for index {}",
-                target_index
+                "OnePacking should work with small values for index {target_index}"
             );
         }
     }
@@ -1266,7 +1014,6 @@ mod tests {
     fn test_inspire_sizes_production() {
         use crate::pir::query::query_seeded;
 
-        // Production parameters: d=2048, 32-byte entries (single-modulus for switching)
         let params = crate::params::InspireParams {
             ring_dim: 2048,
             q: 1152921504606830593,
@@ -1278,10 +1025,9 @@ mod tests {
             security_level: crate::params::SecurityLevel::Bits128,
         };
         let d = params.ring_dim;
-        let entry_size = 32; // Ethereum state entry
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let entry_size = 32;
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
 
-        // Create minimal database
         let num_entries = d;
         let database: Vec<u8> = (0..(num_entries * entry_size))
             .map(|i| (i % 256) as u8)
@@ -1292,7 +1038,6 @@ mod tests {
 
         let target_index = 42u64;
 
-        // Generate all query types
         let (_state, full_query) = query(
             &crs,
             target_index,
@@ -1310,11 +1055,9 @@ mod tests {
         )
         .unwrap();
 
-        // Get responses
         let response_no_pack = respond(&crs, &encoded_db, &full_query).unwrap();
         let response_one_pack = respond_one_packing(&crs, &encoded_db, &full_query).unwrap();
 
-        // Serialize to get actual sizes
         let query_full_bytes = bincode::serialize(&full_query).unwrap();
         let query_seeded_bytes = bincode::serialize(&seeded_query).unwrap();
         let resp_0_bytes = response_no_pack.to_binary().unwrap();
@@ -1322,10 +1065,7 @@ mod tests {
 
         println!();
         println!("╔══════════════════════════════════════════════════════════════╗");
-        println!(
-            "║  InsPIRe Size Comparison (d={}, entry={}B, 16 columns)   ║",
-            d, entry_size
-        );
+        println!("║  InsPIRe Size Comparison (d={d}, entry={entry_size}B, 16 columns)   ║");
         println!("╠══════════════════════════════════════════════════════════════╣");
         println!("║  QUERY SIZES                                                 ║");
         println!("╟──────────────────────────────────────────────────────────────╢");

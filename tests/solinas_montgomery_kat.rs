@@ -1,13 +1,6 @@
-//! Solinas-form Montgomery reduction differential KAT.
-//!
-//! Verifies that `solinas_redc::solinas_mont_mul_default_q` is
-//! byte-identical to classical Montgomery REDC at DEFAULT_Q across
-//! 10 000 random inputs + edge cases, and that the AVX-512-IFMA
-//! SIMD variant matches lane-by-lane.
-//!
-//! Integration gate: no Solinas-Montgomery code lands in the hot
-//! path until this KAT is green. A failure here = invention
-//! broken = revert.
+//! `solinas_mont_mul_default_q` must be byte-identical to classical Montgomery
+//! REDC at DEFAULT_Q, and its AVX-512-IFMA variant lane-identical to it.
+//! Nothing Solinas-based enters the hot path until this is green.
 
 use raven_inspire::math::ifma52::mont_mul_split52;
 use raven_inspire::math::mod_q::DEFAULT_Q;
@@ -23,12 +16,6 @@ fn naive_mul_mod(a: u64, b: u64, q: u64) -> u64 {
 
 #[test]
 fn solinas_matches_classical_montgomery_default_q() {
-    // Classical Montgomery (inspire-rs) path: a, b in Montgomery form,
-    // result in Montgomery form.
-    //
-    // Solinas path: a, b in Montgomery form, result in Montgomery form.
-    //
-    // Byte-identity expected across 10k random inputs.
     let q = DEFAULT_Q;
     let ctx = NttContext::with_default_q(2048);
     let q_inv_neg = ctx.q_inv_neg_for_test(0);
@@ -38,7 +25,6 @@ fn solinas_matches_classical_montgomery_default_q() {
         let a = rng.gen_range(0..q);
         let b = rng.gen_range(0..q);
 
-        // Convert to Montgomery form, then multiply.
         let a_mont = ctx.to_mont(a);
         let b_mont = ctx.to_mont(b);
 
@@ -51,7 +37,6 @@ fn solinas_matches_classical_montgomery_default_q() {
              solinas={solinas} classical={classical}"
         );
 
-        // Also cross-check against u128 naive after stripping Montgomery.
         let solinas_stripped = ctx.from_mont(solinas);
         let naive = naive_mul_mod(a, b, q);
         assert_eq!(
@@ -99,7 +84,6 @@ fn solinas_edge_cases_default_q() {
                 "edge a={a} b={b} solinas={solinas} classical={classical}"
             );
 
-            // Strip and compare to naive.
             let got = ctx.from_mont(solinas);
             let want = naive_mul_mod(a, b, q);
             assert_eq!(got, want, "edge a={a} b={b} stripped={got} naive={want}");
@@ -107,23 +91,15 @@ fn solinas_edge_cases_default_q() {
     }
 }
 
-/// Boundary check: m = 0 and m = q - 1 explicitly hit the identity
-/// verification from the design doc (§7).
+/// Solinas matches classical at m = 0 and across the random m distribution.
 #[test]
 fn solinas_m_boundary_identities() {
-    // m = 0: solinas_redc should produce 0 * q_inv_neg -> m = 0,
-    // mq = 0, t = ab >> 64 = 0 (since a*b mod 2^64 = 0 when mq=0
-    // and ab = 0). For a=b=0 this is trivially 0 = 0.
     let q = DEFAULT_Q;
     let ctx = NttContext::with_default_q(2048);
     let q_inv_neg = ctx.q_inv_neg_for_test(0);
 
-    // a = b = 0 (trivial)
     assert_eq!(solinas_mont_mul_default_q(0, 0, q_inv_neg), 0);
 
-    // Verify m = q - 1 pattern: pick a, b such that their Montgomery
-    // product exercises m = q - 1. Approach: random search with
-    // fixed seed until we hit the boundary.
     let mut rng = StdRng::seed_from_u64(0x9001_BEEF);
     for _ in 0..1000 {
         let a_mont = rng.gen_range(0..q);
@@ -131,9 +107,6 @@ fn solinas_m_boundary_identities() {
         let ab = (a_mont as u128).wrapping_mul(b_mont as u128);
         let m = (ab as u64).wrapping_mul(q_inv_neg);
 
-        // All m values in u64 are exercised over 1000 random inputs;
-        // we don't need to target q-1 specifically. Just verify
-        // Solinas matches classical across the random distribution.
         let solinas = solinas_mont_mul_default_q(a_mont, b_mont, q_inv_neg);
         let classical = mont_mul_split52(a_mont, b_mont, q, q_inv_neg);
         assert_eq!(solinas, classical, "m boundary check: m={m}");
@@ -159,18 +132,15 @@ fn solinas_ifma52_x8_matches_scalar() {
     let a_std: Vec<u64> = (0..len).map(|_| rng.gen_range(0..q)).collect();
     let b_std: Vec<u64> = (0..len).map(|_| rng.gen_range(0..q)).collect();
 
-    // Convert to Montgomery form.
     let a_mont: Vec<u64> = a_std.iter().map(|&a| ctx.to_mont(a)).collect();
     let b_mont: Vec<u64> = b_std.iter().map(|&b| ctx.to_mont(b)).collect();
 
-    // Scalar Solinas reference.
     let expected: Vec<u64> = a_mont
         .iter()
         .zip(b_mont.iter())
         .map(|(&am, &bm)| solinas_mont_mul_default_q(am, bm, q_inv_neg))
         .collect();
 
-    // SIMD candidate.
     let mut candidate = vec![0u64; len];
     unsafe {
         pointwise_solinas_mont_mul_x8(&a_mont, &b_mont, &mut candidate, q_inv_neg);

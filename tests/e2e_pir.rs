@@ -1,6 +1,4 @@
-//! End-to-end PIR correctness tests for InsPIRe
-//!
-//! Tests the full PIR protocol: Setup → Query → Respond → Extract = Original Entry
+//! Setup -> query -> respond -> extract must return the original entry.
 
 use raven_inspire::math::GaussianSampler;
 use raven_inspire::params::{InspireParams, InspireVariant, SecurityLevel};
@@ -36,7 +34,7 @@ fn test_e2e_single_entry() {
         }
     }
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     for target_idx in 0..num_entries {
@@ -52,7 +50,7 @@ fn test_e2e_single_entry() {
         let result = extract(&crs, &state, &response, entry_size).unwrap();
 
         let expected = &database[target_idx * entry_size..(target_idx + 1) * entry_size];
-        assert_eq!(result, expected, "Entry {} mismatch", target_idx);
+        assert_eq!(result, expected, "Entry {target_idx} mismatch");
     }
 }
 
@@ -68,7 +66,7 @@ fn test_e2e_random_entries() {
     let mut database = vec![0u8; num_entries * entry_size];
     rng.fill(&mut database[..]);
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     for _ in 0..10 {
@@ -86,7 +84,7 @@ fn test_e2e_random_entries() {
         let result = extract(&crs, &state, &response, entry_size).unwrap();
 
         let expected = &database[target_idx * entry_size..(target_idx + 1) * entry_size];
-        assert_eq!(result, expected, "Entry {} mismatch", target_idx);
+        assert_eq!(result, expected, "Entry {target_idx} mismatch");
     }
 }
 
@@ -106,7 +104,7 @@ fn test_e2e_multi_shard() {
         }
     }
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     for shard_id in 0..num_shards {
@@ -141,7 +139,7 @@ fn test_e2e_privacy_basic() {
         database[i * entry_size..(i + 1) * entry_size].fill(i as u8);
     }
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let target_idx = 5;
@@ -158,14 +156,13 @@ fn test_e2e_privacy_basic() {
 
     assert!(
         result.iter().all(|&b| b == 5),
-        "Should retrieve entry 5, got {:?}",
-        result
+        "Should retrieve entry 5, got {result:?}"
     );
 
     for other_idx in 0..num_entries {
         if other_idx != target_idx {
             let other_entry = vec![other_idx as u8; entry_size];
-            assert_ne!(result, other_entry, "Should not get entry {}", other_idx);
+            assert_ne!(result, other_entry, "Should not get entry {other_idx}");
         }
     }
 }
@@ -183,7 +180,7 @@ fn test_e2e_boundary_indices() {
         }
     }
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let test_indices = [0, 1, num_entries / 2, num_entries - 2, num_entries - 1];
@@ -201,7 +198,7 @@ fn test_e2e_boundary_indices() {
         let result = extract(&crs, &state, &response, entry_size).unwrap();
 
         let expected = &database[target_idx * entry_size..(target_idx + 1) * entry_size];
-        assert_eq!(result, expected, "Boundary index {} mismatch", target_idx);
+        assert_eq!(result, expected, "Boundary index {target_idx} mismatch");
     }
 }
 
@@ -218,7 +215,7 @@ fn test_e2e_different_entry_sizes() {
             }
         }
 
-        let mut sampler = GaussianSampler::new(params.sigma);
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
         let (crs, encoded_db, rlwe_sk) =
             setup(&params, &database, entry_size, &mut sampler).unwrap();
 
@@ -237,8 +234,7 @@ fn test_e2e_different_entry_sizes() {
         let expected = &database[target_idx * entry_size..(target_idx + 1) * entry_size];
         assert_eq!(
             result, expected,
-            "Entry size {} mismatch for entry {}",
-            entry_size, target_idx
+            "Entry size {entry_size} mismatch for entry {target_idx}"
         );
     }
 }
@@ -257,7 +253,7 @@ fn test_e2e_seeded_query() {
         }
     }
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     for target_idx in [0, 15, 31, 63] {
@@ -270,7 +266,6 @@ fn test_e2e_seeded_query() {
         )
         .unwrap();
 
-        // Server expands the seeded query before processing
         let expanded_query = seeded_query.expand();
         let response = respond(&crs, &encoded_db, &expanded_query).unwrap();
         let result = extract(&crs, &state, &response, entry_size).unwrap();
@@ -278,8 +273,7 @@ fn test_e2e_seeded_query() {
         let expected = &database[target_idx * entry_size..(target_idx + 1) * entry_size];
         assert_eq!(
             result, expected,
-            "Seeded query: Entry {} mismatch",
-            target_idx
+            "Seeded query: Entry {target_idx} mismatch"
         );
     }
 }
@@ -298,7 +292,7 @@ fn test_e2e_variant_no_packing() {
         }
     }
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     for target_idx in [0, 10, 31] {
@@ -322,19 +316,14 @@ fn test_e2e_variant_no_packing() {
         let expected = &database[target_idx * entry_size..(target_idx + 1) * entry_size];
         assert_eq!(
             result, expected,
-            "NoPacking variant: Entry {} mismatch",
-            target_idx
+            "NoPacking variant: Entry {target_idx} mismatch"
         );
     }
 }
 
-/// Test OnePacking variant which packs multiple column RLWEs into a single RLWE.
-///
-/// IMPORTANT: OnePacking has a constraint that column_value * d < p, meaning
-/// column values must be < p/d = 65536/256 = 256 for the test parameters.
-/// This test uses 2-byte entries with high_byte=0 to ensure column values < 256.
+/// OnePacking needs column_value * d < p, so entries keep a zero high byte.
 #[test]
-#[ignore = "tree-packed extract requires gcd(d, p) == 1; legacy fixture (d=256, p=65536) violates the invariant — typed ExtractError::DegreeNotInvertible is the correct outcome"]
+#[ignore = "tree-packed extract requires gcd(d, p) == 1; legacy fixture (d=256, p=65536) violates the invariant - typed ExtractError::DegreeNotInvertible is the correct outcome"]
 fn test_e2e_variant_one_packing() {
     let params = test_params();
     let d = params.ring_dim;
@@ -342,7 +331,6 @@ fn test_e2e_variant_one_packing() {
     let num_entries = d;
     let entry_size = 2; // 1 column per entry, value < 256
 
-    // Create database with column values < 256 (high byte = 0)
     let database: Vec<u8> = (0..num_entries)
         .flat_map(|i| {
             let low_byte = (i % 256) as u8;
@@ -351,10 +339,9 @@ fn test_e2e_variant_one_packing() {
         })
         .collect();
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
-    // Test multiple indices
     for target_index in [0u64, 1, 42, 100] {
         let (state, client_query) = query(
             &crs,
@@ -368,15 +355,12 @@ fn test_e2e_variant_one_packing() {
         let mut client_query = client_query;
         client_query.packing_mode = PackingMode::Tree;
 
-        // Use OnePacking variant
         let response =
             respond_with_variant(&crs, &encoded_db, &client_query, InspireVariant::OnePacking)
                 .expect("OnePacking respond should succeed");
 
-        // Verify we got a packed response (single ciphertext)
         assert_eq!(response.ciphertext.ring_dim(), params.ring_dim);
 
-        // Extract using OnePacking variant
         let extracted = extract_with_variant(
             &crs,
             &state,
@@ -386,7 +370,6 @@ fn test_e2e_variant_one_packing() {
         )
         .expect("Extract should succeed");
 
-        // Verify extracted data matches expected
         let expected_start = (target_index as usize) * entry_size;
         let expected_end = expected_start + entry_size;
         let expected = &database[expected_start..expected_end];
@@ -402,12 +385,9 @@ fn test_e2e_variant_one_packing() {
     }
 }
 
-/// Test TwoPacking variant (seeded query + packed response)
-///
-/// TwoPacking uses the same response format as OnePacking, but expects the query
-/// to have been generated with query_seeded() for bandwidth reduction.
+/// TwoPacking shares OnePacking's response format but requires a seeded query.
 #[test]
-#[ignore = "tree-packed extract requires gcd(d, p) == 1; legacy fixture (d=256, p=65536) violates the invariant — typed ExtractError::DegreeNotInvertible is the correct outcome"]
+#[ignore = "tree-packed extract requires gcd(d, p) == 1; legacy fixture (d=256, p=65536) violates the invariant - typed ExtractError::DegreeNotInvertible is the correct outcome"]
 fn test_e2e_variant_two_packing() {
     let params = test_params();
     let d = params.ring_dim;
@@ -415,7 +395,6 @@ fn test_e2e_variant_two_packing() {
     let num_entries = d;
     let entry_size = 2; // 1 column per entry, value < 256
 
-    // Create database with column values < 256
     let database: Vec<u8> = (0..num_entries)
         .flat_map(|i| {
             let low_byte = (i % 256) as u8;
@@ -424,7 +403,7 @@ fn test_e2e_variant_two_packing() {
         })
         .collect();
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     let target_index = 42u64;
@@ -437,11 +416,9 @@ fn test_e2e_variant_two_packing() {
     )
     .unwrap();
 
-    // TwoPacking: seeded query + packed response
     let response = respond_seeded_packed(&crs, &encoded_db, &seeded_query)
         .expect("TwoPacking respond should succeed");
 
-    // Extract using TwoPacking (falls back to OnePacking extraction)
     let extracted = extract_with_variant(
         &crs,
         &state,
@@ -463,9 +440,7 @@ fn test_e2e_variant_two_packing() {
     );
 }
 
-/// Test InspiRING canonical packing (2-matrix algorithm)
-///
-/// Uses the canonical InspiRING implementation which is 226x faster than tree packing.
+/// Canonical InspiRING 2-matrix packing.
 #[test]
 fn test_e2e_inspiring_packing() {
     let params = test_params();
@@ -474,7 +449,6 @@ fn test_e2e_inspiring_packing() {
     let num_entries = d;
     let entry_size = 2; // 1 column per entry, value < 256
 
-    // Create database with column values < 256 (high byte = 0)
     let database: Vec<u8> = (0..num_entries)
         .flat_map(|i| {
             let low_byte = (i % 256) as u8;
@@ -483,7 +457,7 @@ fn test_e2e_inspiring_packing() {
         })
         .collect();
 
-    let mut sampler = GaussianSampler::new(params.sigma);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
     let (crs, encoded_db, rlwe_sk) = setup(&params, &database, entry_size, &mut sampler).unwrap();
 
     assert!(
@@ -491,7 +465,6 @@ fn test_e2e_inspiring_packing() {
         "InspiRING pack_params should be set"
     );
 
-    // Test multiple indices
     for target_index in [0u64, 1, 42, 100] {
         let (state, client_query) = query(
             &crs,
@@ -502,18 +475,16 @@ fn test_e2e_inspiring_packing() {
         )
         .unwrap();
 
-        // Use InspiRING packing
         let response = respond_inspiring(&crs, &encoded_db, &client_query)
             .expect("InspiRING respond should succeed");
 
-        // Verify we got a packed response
         assert_eq!(response.ciphertext.ring_dim(), params.ring_dim);
         assert!(
             response.column_ciphertexts.is_empty(),
             "InspiRING should pack into single ciphertext"
         );
 
-        // Extract using InspiRING extraction (NOT tree packing - different scaling)
+        // InspiRING extraction, not tree: different scaling
         let extracted =
             extract_inspiring(&crs, &state, &response, entry_size).expect("Extract should succeed");
 

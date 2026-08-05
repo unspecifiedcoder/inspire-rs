@@ -2,16 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// LWE secret key: vector in Z_q^d sampled from error distribution.
-///
-/// The secret key is a vector of small integers (typically from a Gaussian
-/// distribution) used for encryption and decryption.
-///
-/// # Fields
-///
-/// * `coeffs` - Secret key coefficients in Z_q
-/// * `dim` - Dimension of the key (typically matches ring dimension)
-/// * `q` - Ciphertext modulus
+/// LWE secret key: a small-coefficient vector in Z_q^d.
 ///
 /// # Example
 ///
@@ -43,20 +34,7 @@ impl std::fmt::Debug for LweSecretKey {
     }
 }
 
-/// LWE ciphertext: (a, b) where b = -<a, s> + e + Δ·m.
-///
-/// Encrypts a message m in Z_p using the LWE encryption scheme.
-/// Supports homomorphic addition, subtraction, and scalar multiplication.
-///
-/// # Fields
-///
-/// * `a` - Random vector in Z_q^d
-/// * `b` - Scalar in Z_q: b = -<a, s> + e + Δ·m
-/// * `q` - Ciphertext modulus
-///
-/// # Decryption
-///
-/// To decrypt, compute `b + <a, s> = e + Δ·m`, then round to recover m.
+/// LWE ciphertext `(a, b)` with `b = -<a, s> + e + delta*m`; decrypt via `b + <a, s>`.
 ///
 /// # Example
 ///
@@ -69,9 +47,9 @@ impl std::fmt::Debug for LweSecretKey {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LweCiphertext {
-    /// Random vector in Z_q^d.
+    /// Uniform vector in Z_q^d.
     pub a: Vec<u64>,
-    /// Scalar in Z_q: b = -<a, s> + e + Δ·m.
+    /// `-<a, s> + e + delta*m`.
     pub b: u64,
     /// Ciphertext modulus.
     pub q: u64,

@@ -1,0 +1,132 @@
+//! An illegal `inspiring_num_columns` from a server-supplied CRS must surface
+//! as a typed error: a trap on the WASM client path kills the session with no
+//! recoverable signal.
+
+#![allow(
+    clippy::expect_used,
+    reason = "test-target fixture helpers; an abort here is the failure report"
+)]
+
+use raven_inspire::math::GaussianSampler;
+use raven_inspire::params::{InspireParams, SecurityLevel};
+use raven_inspire::pir::{query, setup, ClientSession, ServerCrs};
+use raven_inspire::rlwe::RlweSecretKey;
+
+const ILLEGAL_WIDTH: usize = 24;
+
+fn params_at(ring_dim: usize) -> InspireParams {
+    InspireParams {
+        ring_dim,
+        q: 1_152_921_504_606_830_593,
+        crt_moduli: vec![1_152_921_504_606_830_593],
+        p: 65536,
+        sigma: 6.4,
+        gadget_base: 1 << 20,
+        gadget_len: 3,
+        security_level: SecurityLevel::Bits128,
+    }
+}
+
+fn honest_setup(
+    entry_size: usize,
+) -> (ServerCrs, RlweSecretKey, raven_inspire::params::ShardConfig) {
+    let params = params_at(256);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
+    let database = vec![7u8; params.ring_dim * entry_size];
+    let (crs, encoded_db, sk) =
+        setup(&params, &database, entry_size, &mut sampler).expect("32-byte records must set up");
+    (crs, sk, encoded_db.config)
+}
+
+#[test]
+fn mutated_crs_width_is_rejected_at_deserialization() {
+    let (mut crs, _sk, _config) = honest_setup(32);
+    crs.inspiring_num_columns = ILLEGAL_WIDTH;
+    let bytes = crs.to_versioned_bytes().expect("serialize");
+
+    let err = ServerCrs::from_versioned_bytes(&bytes)
+        .expect_err("an illegal InspiRING width must not decode into a usable CRS");
+    let message = err.to_string();
+    assert!(
+        message.contains("inspiring_num_columns 24") && message.contains("legal widths"),
+        "error must name the offending width and the legal set, got: {message}"
+    );
+}
+
+#[test]
+fn tree_packing_only_crs_still_deserializes() {
+    let (mut crs, _sk, _config) = honest_setup(32);
+    crs.inspiring_num_columns = 0;
+    let bytes = crs.to_versioned_bytes().expect("serialize");
+
+    let decoded = ServerCrs::from_versioned_bytes(&bytes)
+        .expect("width 0 means tree packing only and must stay accepted");
+    assert_eq!(decoded.inspiring_num_columns, 0);
+}
+
+#[test]
+fn honest_crs_round_trips_through_ingest_validation() {
+    let (crs, _sk, _config) = honest_setup(32);
+    let bytes = crs.to_versioned_bytes().expect("serialize");
+
+    let decoded = ServerCrs::from_versioned_bytes(&bytes).expect("an honest CRS must decode");
+    assert_eq!(decoded.inspiring_num_columns, 16);
+}
+
+#[test]
+fn client_session_new_errors_on_a_mutated_crs_width() {
+    let (mut crs, sk, _config) = honest_setup(32);
+    crs.inspiring_num_columns = ILLEGAL_WIDTH;
+    let mut sampler = GaussianSampler::with_seed(crs.params.sigma, 0);
+
+    let err = ClientSession::new(crs, sk, &mut sampler)
+        .expect_err("ClientSession::new must reject an illegal width instead of trapping");
+    assert!(
+        err.to_string().contains("InspiRING"),
+        "error must name the failing subsystem, got: {err}"
+    );
+}
+
+#[test]
+fn query_errors_on_a_mutated_crs_width() {
+    let (mut crs, sk, config) = honest_setup(32);
+    crs.inspiring_num_columns = ILLEGAL_WIDTH;
+    let mut sampler = GaussianSampler::with_seed(crs.params.sigma, 0);
+
+    let err = query(&crs, 3, &config, &sk, &mut sampler)
+        .expect_err("query must reject an illegal width instead of trapping");
+    assert!(
+        err.to_string().contains("InspiRING"),
+        "error must name the failing subsystem, got: {err}"
+    );
+}
+
+/// Width is derived as ceil(entry_size / 2), so the error names entry sizes.
+#[test]
+fn setup_rejects_an_entry_size_whose_derived_width_is_illegal() {
+    let params = params_at(256);
+    let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
+    let entry_size = 6usize;
+    let database = vec![7u8; params.ring_dim * entry_size];
+
+    let err = setup(&params, &database, entry_size, &mut sampler)
+        .expect_err("entry_size 6 derives width 3, which has no packing generator");
+    let message = err.to_string();
+    assert!(
+        message.contains("entry_size 6") && message.contains("legal entry sizes"),
+        "error must name the offending entry size and the legal set, got: {message}"
+    );
+}
+
+#[test]
+fn setup_accepts_every_entry_size_whose_derived_width_is_legal() {
+    let params = params_at(256);
+    for entry_size in [1usize, 2, 3, 4, 7, 8, 31, 32] {
+        let mut sampler = GaussianSampler::with_seed(params.sigma, 0);
+        let database = vec![7u8; params.ring_dim * entry_size];
+        assert!(
+            setup(&params, &database, entry_size, &mut sampler).is_ok(),
+            "entry_size {entry_size} derives a power-of-two width and must set up"
+        );
+    }
+}

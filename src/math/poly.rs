@@ -1,36 +1,19 @@
-//! Polynomial operations over R_q = Z_q\[X\]/(X^d + 1).
-//!
-//! Provides polynomial arithmetic using NTT for efficient multiplication.
-//! Polynomials can exist in either coefficient domain or NTT domain.
-//!
-//! # Overview
-//!
-//! The polynomial ring R_q = Z_q\[X\]/(X^d + 1) is fundamental to lattice-based
-//! cryptography. This module provides:
-//!
-//! - Basic arithmetic: addition, subtraction, negation, scalar multiplication
-//! - NTT-based multiplication for O(n log n) performance
-//! - Domain conversion between coefficient and NTT representations
-//! - Random and Gaussian polynomial sampling
-//!
-//! # Example
+//! Polynomial arithmetic over R_q = Z_q\[X\]/(X^d + 1), coefficient or NTT domain.
 //!
 //! ```
 //! use raven_inspire::math::{Poly, NttContext};
 //! use raven_inspire::math::mod_q::DEFAULT_Q;
 //!
 //! let ctx = NttContext::with_default_q(256);
-//!
-//! // Create polynomials
 //! let a = Poly::random(256, DEFAULT_Q);
 //! let b = Poly::random(256, DEFAULT_Q);
-//!
-//! // Multiply using NTT
 //! let product = a.mul_ntt(&b, &ctx);
 //! ```
 
 use super::crt::{crt_compose_2, crt_decompose_2, crt_modulus, mod_inverse};
-use super::gaussian::GaussianSampler;
+use super::gaussian::{
+    os_seeded_chacha, os_seeded_chacha_or_abort, EntropyUnavailable, GaussianSampler,
+};
 use super::mod_q::{ModQ, DEFAULT_Q};
 use super::ntt::NttContext;
 use rand::Rng;
@@ -38,16 +21,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-/// Cached AVX-512-IFMA52 CPUID detection for the Solinas multiply-
-/// accumulate dispatch in [`Poly::mul_acc_ntt_domain`]. The
-/// `is_x86_feature_detected!` macro reads CPUID through std's lazy
-/// feature cache, but invoking it on every coefficient batch in a
-/// hot inner loop adds a (small) per-batch overhead. A
-/// `OnceLock<bool>` caches the verdict at first use.
-///
-/// Disabled (returns `false`) on non-x86_64 targets; the scalar
-/// fallback path is the only code reachable from `mul_acc_ntt_domain`
-/// under those `cfg`s.
+/// CPUID verdict cached once; `is_x86_feature_detected!` per coefficient batch is measurable.
 #[cfg(all(feature = "simd-packing-offline", target_arch = "x86_64"))]
 fn has_avx512_ifma_cached() -> bool {
     use std::sync::OnceLock;
@@ -57,17 +31,7 @@ fn has_avx512_ifma_cached() -> bool {
     })
 }
 
-/// Polynomial in R_q = Z_q\[X\]/(X^d + 1).
-///
-/// Represents a polynomial with coefficients in Z_q, reduced modulo X^d + 1.
-/// Polynomials can be in coefficient domain or NTT domain for efficient
-/// multiplication.
-///
-/// # Fields
-///
-/// * `coeffs` - Coefficients in coefficient or NTT domain
-/// * `q` - Modulus q
-/// * `is_ntt` - Whether coefficients are in NTT domain
+/// Polynomial in R_q = Z_q\[X\]/(X^d + 1), CRT-split across up to two moduli.
 ///
 /// # Example
 ///
@@ -81,30 +45,22 @@ fn has_avx512_ifma_cached() -> bool {
 /// ```
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Poly {
-    /// Coefficients in coefficient or NTT domain.
     coeffs: Vec<u64>,
-    /// CRT moduli (length 1 for single-modulus).
     moduli: Vec<u64>,
-    /// Composite modulus q (product of CRT moduli).
     q: u64,
-    /// Ring dimension (number of coefficients per modulus).
     dim: usize,
-    /// Cached inverse of moduli[0] modulo moduli[1] (for CRT compose).
     crt_q0_inv_mod_q1: u64,
-    /// Whether coefficients are in NTT domain.
     is_ntt: bool,
 }
 
 impl Poly {
+    /// Sole entry point for the modulus vector, so `1 <= moduli.len() <= 2` holds everywhere.
     fn init_moduli(moduli: &[u64]) -> (Vec<u64>, u64, u64) {
-        // Internal invariant: `InspireParams::validate()` rejects
-        // `crt_moduli.len() > 2` at parameter-construction time.
-        // Converting to `Result` would cascade through 20+ public
-        // Poly constructors, so this remains a panic.
         assert!(!moduli.is_empty(), "moduli must be non-empty");
-        if moduli.len() > 2 {
-            panic!("CRT with more than 2 moduli not supported");
-        }
+        assert!(
+            moduli.len() <= 2,
+            "CRT with more than 2 moduli not supported"
+        );
         let moduli_vec = moduli.to_vec();
         let q = crt_modulus(&moduli_vec);
         let inv = if moduli_vec.len() == 2 {
@@ -115,12 +71,12 @@ impl Poly {
         (moduli_vec, q, inv)
     }
 
-    /// Create zero polynomial with given dimension and modulus
+    /// Zero polynomial.
     pub fn zero(dim: usize, q: u64) -> Self {
         Self::zero_moduli(dim, &[q])
     }
 
-    /// Create zero polynomial with CRT moduli.
+    /// Zero polynomial over CRT moduli.
     pub fn zero_moduli(dim: usize, moduli: &[u64]) -> Self {
         let (moduli_vec, q, inv) = Self::init_moduli(moduli);
         let crt_count = moduli_vec.len();
@@ -134,30 +90,29 @@ impl Poly {
         }
     }
 
-    /// Create zero polynomial with default modulus
+    /// Zero polynomial over `DEFAULT_Q`.
     pub fn zero_default(dim: usize) -> Self {
         Self::zero(dim, DEFAULT_Q)
     }
 
-    /// Create polynomial from coefficient vector
+    /// From standard-form coefficients.
     pub fn from_coeffs(coeffs: Vec<u64>, q: u64) -> Self {
         Self::from_coeffs_moduli(coeffs, &[q])
     }
 
-    /// Create polynomial from coefficients with CRT moduli.
-    ///
-    /// `coeffs` are interpreted modulo the composite modulus and split into residues.
+    /// From coefficients modulo the composite modulus, split into CRT residues.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "owned Vec is the established shape across ~60 call sites"
+    )]
+    #[must_use]
     pub fn from_coeffs_moduli(coeffs: Vec<u64>, moduli: &[u64]) -> Self {
         let dim = coeffs.len();
         let (moduli_vec, q, inv) = Self::init_moduli(moduli);
         let crt_count = moduli_vec.len();
         let mut crt_coeffs = vec![0u64; dim * crt_count];
 
-        if crt_count == 1 {
-            for (i, &c) in coeffs.iter().enumerate() {
-                crt_coeffs[i] = c % moduli_vec[0];
-            }
-        } else if crt_count == 2 {
+        if crt_count == 2 {
             let q0 = moduli_vec[0];
             let q1 = moduli_vec[1];
             for (i, &c) in coeffs.iter().enumerate() {
@@ -166,8 +121,9 @@ impl Poly {
                 crt_coeffs[i + dim] = c1;
             }
         } else {
-            // Same invariant as init_moduli.
-            panic!("CRT with more than 2 moduli not supported");
+            for (i, &c) in coeffs.iter().enumerate() {
+                crt_coeffs[i] = c % moduli_vec[0];
+            }
         }
 
         let mut p = Self {
@@ -182,10 +138,7 @@ impl Poly {
         p
     }
 
-    /// Create polynomial from CRT-residue coefficients.
-    ///
-    /// `coeffs` must be length `dim * crt_count` with residues concatenated
-    /// by modulus: [mod0_coeffs..., mod1_coeffs..., ...].
+    /// From residues concatenated by modulus, length `dim * crt_count`.
     pub fn from_crt_coeffs(coeffs: Vec<u64>, moduli: &[u64]) -> Self {
         let (moduli_vec, q, inv) = Self::init_moduli(moduli);
         let crt_count = moduli_vec.len();
@@ -206,23 +159,10 @@ impl Poly {
         p
     }
 
-    /// Create polynomial from CRT-residue coefficients, skipping the
-    /// final `reduce()` pass.
+    /// [`Self::from_crt_coeffs`] without the trailing reduce pass.
     ///
-    /// Callers that produce coefficients already guaranteed to be in
-    /// `[0, moduli[m])` per-limb can avoid the ~6k modulo operations
-    /// that `from_crt_coeffs` performs. Gadget decomposition at
-    /// base = 2^20 is a prime example: every output digit is masked
-    /// by `(1 << 20) - 1` and therefore < 2^20 < DEFAULT_Q.
-    ///
-    /// # Safety (contract)
-    ///
-    /// Caller MUST ensure every coefficient satisfies the per-limb
-    /// reduction invariant (`coeffs[m * dim + j] < moduli[m]`). Passing
-    /// values ≥ moduli[m] produces a `Poly` in an inconsistent state
-    /// that downstream operations may misinterpret. Not marked `unsafe`
-    /// because no memory-safety violation results — the contract is
-    /// logical correctness only.
+    /// Caller MUST guarantee `coeffs[m * dim + j] < moduli[m]`; violating it
+    /// leaves the `Poly` logically inconsistent (no memory unsafety, so not `unsafe`).
     pub fn from_crt_coeffs_reduced(coeffs: Vec<u64>, moduli: &[u64]) -> Self {
         let (moduli_vec, q, inv) = Self::init_moduli(moduli);
         let crt_count = moduli_vec.len();
@@ -241,29 +181,29 @@ impl Poly {
         }
     }
 
-    /// Create polynomial from coefficients with default modulus
+    /// [`Self::from_coeffs`] over `DEFAULT_Q`.
     pub fn from_coeffs_default(coeffs: Vec<u64>) -> Self {
         Self::from_coeffs(coeffs, DEFAULT_Q)
     }
 
-    /// Create polynomial with a single coefficient (constant polynomial)
+    /// Constant polynomial.
     pub fn constant(value: u64, dim: usize, q: u64) -> Self {
         Self::constant_moduli(value, dim, &[q])
     }
 
-    /// Create constant polynomial with CRT moduli.
+    /// Constant polynomial over CRT moduli.
     pub fn constant_moduli(value: u64, dim: usize, moduli: &[u64]) -> Self {
         let mut coeffs = vec![0u64; dim];
         coeffs[0] = value;
         Self::from_coeffs_moduli(coeffs, moduli)
     }
 
-    /// Sample polynomial with coefficients from discrete Gaussian distribution
+    /// Discrete Gaussian error polynomial.
     pub fn sample_gaussian(dim: usize, q: u64, sampler: &mut GaussianSampler) -> Self {
         Self::sample_gaussian_moduli(dim, &[q], sampler)
     }
 
-    /// Sample polynomial with CRT moduli.
+    /// Discrete Gaussian error polynomial over CRT moduli.
     pub fn sample_gaussian_moduli(
         dim: usize,
         moduli: &[u64],
@@ -290,28 +230,30 @@ impl Poly {
         }
     }
 
-    /// Generate a uniformly random polynomial
+    /// Uniform polynomial.
     pub fn random(dim: usize, q: u64) -> Self {
         Self::random_moduli(dim, &[q])
     }
 
-    /// Generate a uniformly random polynomial with CRT moduli.
-    ///
-    /// Uses `rand::thread_rng()` as the RNG source. Callers that need
-    /// reproducibility (tests) or want to control the entropy source
-    /// (e.g. WASM contexts that pre-seed a deterministic RNG) should
-    /// use [`Self::random_with_rng_moduli`] with their own RNG.
+    /// Uniform polynomial from an OS-seeded ChaCha20 stream; aborts on entropy failure.
+    /// Use [`Self::try_random_moduli`] to carry that failure instead.
     pub fn random_moduli(dim: usize, moduli: &[u64]) -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = os_seeded_chacha_or_abort("Poly::random_moduli");
         Self::random_with_rng_moduli(dim, moduli, &mut rng)
     }
 
-    /// Generate a uniformly random polynomial with given RNG
+    /// [`Self::random_moduli`], surfacing entropy failure as an error.
+    pub fn try_random_moduli(dim: usize, moduli: &[u64]) -> Result<Self, EntropyUnavailable> {
+        let mut rng = os_seeded_chacha("Poly::try_random_moduli")?;
+        Ok(Self::random_with_rng_moduli(dim, moduli, &mut rng))
+    }
+
+    /// Uniform polynomial from a caller-supplied RNG.
     pub fn random_with_rng<R: Rng>(dim: usize, q: u64, rng: &mut R) -> Self {
         Self::random_with_rng_moduli(dim, &[q], rng)
     }
 
-    /// Generate a uniformly random polynomial with CRT moduli and given RNG.
+    /// Uniform polynomial over CRT moduli from a caller-supplied RNG.
     pub fn random_with_rng_moduli<R: Rng>(dim: usize, moduli: &[u64], rng: &mut R) -> Self {
         let (moduli_vec, q, inv) = Self::init_moduli(moduli);
         let crt_count = moduli_vec.len();
@@ -331,28 +273,23 @@ impl Poly {
         }
     }
 
-    /// Generate a deterministic random polynomial from a 32-byte seed
-    ///
-    /// Uses ChaCha20 for expansion. The same seed always produces the same polynomial.
+    /// Deterministic polynomial from a 32-byte seed via ChaCha20.
     pub fn from_seed(seed: &[u8; 32], dim: usize, q: u64) -> Self {
         Self::from_seed_moduli(seed, dim, &[q])
     }
 
-    /// Generate a deterministic random polynomial from a 32-byte seed and CRT moduli.
+    /// [`Self::from_seed`] over CRT moduli.
     pub fn from_seed_moduli(seed: &[u8; 32], dim: usize, moduli: &[u64]) -> Self {
         let mut rng = ChaCha20Rng::from_seed(*seed);
         Self::random_with_rng_moduli(dim, moduli, &mut rng)
     }
 
-    /// Generate a deterministic random polynomial from seed and index
-    ///
-    /// Derives a unique seed by XORing the base seed with the index.
-    /// Useful for generating multiple independent polynomials from one seed.
+    /// [`Self::from_seed`] with the index XORed into the base seed.
     pub fn from_seed_indexed(seed: &[u8; 32], index: usize, dim: usize, q: u64) -> Self {
         Self::from_seed_indexed_moduli(seed, index, dim, &[q])
     }
 
-    /// Generate a deterministic random polynomial from seed and index for CRT moduli.
+    /// [`Self::from_seed_indexed`] over CRT moduli.
     pub fn from_seed_indexed_moduli(
         seed: &[u8; 32],
         index: usize,
@@ -367,27 +304,27 @@ impl Poly {
         Self::from_seed_moduli(&derived_seed, dim, moduli)
     }
 
-    /// Get polynomial dimension
+    /// Ring dimension.
     pub fn dimension(&self) -> usize {
         self.dim
     }
 
-    /// Get polynomial length (alias for dimension)
+    /// Alias of [`Self::dimension`].
     pub fn len(&self) -> usize {
         self.dim
     }
 
-    /// Check if polynomial has zero length
+    /// True when the ring dimension is zero.
     pub fn is_empty(&self) -> bool {
         self.dim == 0
     }
 
-    /// Get modulus
+    /// Composite modulus.
     pub fn modulus(&self) -> u64 {
         self.q
     }
 
-    /// Returns CRT moduli.
+    /// The CRT moduli.
     pub fn moduli(&self) -> &[u64] {
         &self.moduli
     }
@@ -397,93 +334,77 @@ impl Poly {
         self.moduli.len()
     }
 
-    /// Check if in NTT domain
+    /// True when coefficients hold NTT evaluations.
     pub fn is_ntt(&self) -> bool {
         self.is_ntt
     }
 
-    /// Force polynomial to be marked as NTT domain
-    ///
-    /// **Warning**: Only use when you know the coefficients are already NTT values.
-    /// Used by apply_automorphism_ntt which permutes NTT values directly.
+    /// Retags as NTT domain without transforming; caller MUST already hold NTT values.
     #[inline]
     pub fn force_ntt_domain(&mut self) {
         self.is_ntt = true;
     }
 
-    /// Force polynomial to be marked as coefficient domain
-    ///
-    /// **Warning**: Only use when you know the values are already coefficients.
+    /// Retags as coefficient domain without transforming; caller MUST already hold coefficients.
     #[inline]
     pub fn force_coeff_domain(&mut self) {
         self.is_ntt = false;
     }
 
-    /// Get coefficient at index (only valid if not in NTT domain).
-    ///
-    /// `#[inline]` so callers in hot loops whose `self.moduli.len()`
-    /// is statically 1 compile down to a direct `self.coeffs[i]` load,
-    /// skipping the match entirely.
+    /// Coefficient at `i`; meaningful only in coefficient domain.
     #[inline]
+    #[must_use]
     pub fn coeff(&self, i: usize) -> u64 {
         assert!(!self.is_ntt, "Cannot access coefficients in NTT domain");
-        match self.moduli.len() {
-            1 => self.coeffs[i],
-            2 => {
-                let q0 = self.moduli[0];
-                let q1 = self.moduli[1];
-                let a0 = self.coeffs[i];
-                let a1 = self.coeffs[i + self.dim];
-                crt_compose_2(a0, a1, q0, q1, self.crt_q0_inv_mod_q1) % self.q
-            }
-            _ => panic!("CRT with more than 2 moduli not supported"),
+        if self.moduli.len() == 2 {
+            let q0 = self.moduli[0];
+            let q1 = self.moduli[1];
+            let a0 = self.coeffs[i];
+            let a1 = self.coeffs[i + self.dim];
+            crt_compose_2(a0, a1, q0, q1, self.crt_q0_inv_mod_q1) % self.q
+        } else {
+            self.coeffs[i]
         }
     }
 
-    /// Set coefficient at index (only valid if not in NTT domain).
-    ///
-    /// `#[inline]` gate matches `coeff()` above.
+    /// Sets coefficient at `i`; meaningful only in coefficient domain.
     #[inline]
     pub fn set_coeff(&mut self, i: usize, value: u64) {
         assert!(!self.is_ntt, "Cannot set coefficients in NTT domain");
-        match self.moduli.len() {
-            1 => {
-                self.coeffs[i] = value % self.moduli[0];
-            }
-            2 => {
-                let (c0, c1) = crt_decompose_2(value, self.moduli[0], self.moduli[1]);
-                self.coeffs[i] = c0;
-                self.coeffs[i + self.dim] = c1;
-            }
-            _ => panic!("CRT with more than 2 moduli not supported"),
+        if self.moduli.len() == 2 {
+            let (c0, c1) = crt_decompose_2(value, self.moduli[0], self.moduli[1]);
+            self.coeffs[i] = c0;
+            self.coeffs[i + self.dim] = c1;
+        } else {
+            self.coeffs[i] = value % self.moduli[0];
         }
     }
 
-    /// Get reference to coefficient/NTT vector
+    /// Backing values, residues concatenated by modulus.
     pub fn coeffs(&self) -> &[u64] {
         &self.coeffs
     }
 
-    /// Get mutable reference to coefficient/NTT vector
+    /// Mutable [`Self::coeffs`].
     pub fn coeffs_mut(&mut self) -> &mut [u64] {
         &mut self.coeffs
     }
 
-    /// Get coefficients slice for a specific CRT modulus.
+    /// Residue stripe of CRT limb `idx`.
     pub fn coeffs_modulus(&self, modulus_idx: usize) -> &[u64] {
         let start = modulus_idx * self.dim;
         let end = start + self.dim;
         &self.coeffs[start..end]
     }
 
-    /// Get mutable coefficients slice for a specific CRT modulus.
+    /// Mutable [`Self::coeffs_at`].
     pub fn coeffs_modulus_mut(&mut self, modulus_idx: usize) -> &mut [u64] {
         let start = modulus_idx * self.dim;
         let end = start + self.dim;
         &mut self.coeffs[start..end]
     }
 
-    /// Reduce all coefficients modulo q
+    /// Reduces every residue into `[0, moduli[m])`.
     fn reduce(&mut self) {
         for (m, &modulus) in self.moduli.iter().enumerate() {
             let start = m * self.dim;
@@ -494,7 +415,7 @@ impl Poly {
         }
     }
 
-    /// Convert to NTT domain
+    /// Transforms into NTT domain in place.
     pub fn to_ntt(&mut self, ctx: &NttContext) {
         if !self.is_ntt {
             debug_assert_eq!(
@@ -507,7 +428,7 @@ impl Poly {
         }
     }
 
-    /// Convert from NTT domain to coefficient domain
+    /// Transforms back into coefficient domain in place.
     pub fn from_ntt(&mut self, ctx: &NttContext) {
         if self.is_ntt {
             debug_assert_eq!(
@@ -520,21 +441,21 @@ impl Poly {
         }
     }
 
-    /// Create a copy in NTT domain
+    /// [`Self::to_ntt`] on a clone.
     pub fn to_ntt_new(&self, ctx: &NttContext) -> Self {
         let mut result = self.clone();
         result.to_ntt(ctx);
         result
     }
 
-    /// Create a copy in coefficient domain
+    /// [`Self::from_ntt`] on a clone.
     pub fn from_ntt_new(&self, ctx: &NttContext) -> Self {
         let mut result = self.clone();
         result.from_ntt(ctx);
         result
     }
 
-    /// Scalar multiplication
+    /// Scalar product.
     pub fn scalar_mul(&self, scalar: u64) -> Self {
         let mut coeffs = self.coeffs.clone();
         for (m, &modulus) in self.moduli.iter().enumerate() {
@@ -556,7 +477,7 @@ impl Poly {
         }
     }
 
-    /// In-place scalar multiplication
+    /// In-place scalar product.
     pub fn scalar_mul_assign(&mut self, scalar: u64) {
         for (m, &modulus) in self.moduli.iter().enumerate() {
             let scalar_mod = scalar % modulus;
@@ -568,12 +489,12 @@ impl Poly {
         }
     }
 
-    /// Scalar multiplication with ModQ
+    /// [`Self::scalar_mul`] taking a [`ModQ`].
     pub fn scalar_mul_modq(&self, scalar: ModQ) -> Self {
         self.scalar_mul(scalar.value())
     }
 
-    /// Polynomial multiplication using NTT (negacyclic for X^d + 1)
+    /// Negacyclic product via NTT.
     pub fn mul_ntt(&self, other: &Self, ctx: &NttContext) -> Self {
         assert_eq!(self.moduli, other.moduli, "Moduli must match");
         assert_eq!(
@@ -603,7 +524,7 @@ impl Poly {
         poly
     }
 
-    /// Polynomial multiplication when both are already in NTT domain
+    /// Pointwise product; both operands must be in NTT domain.
     pub fn mul_ntt_domain(&self, other: &Self, ctx: &NttContext) -> Self {
         assert!(
             self.is_ntt && other.is_ntt,
@@ -624,9 +545,7 @@ impl Poly {
         }
     }
 
-    /// Polynomial addition when both are already in NTT domain
-    ///
-    /// **Performance**: O(n) pointwise addition without domain conversion
+    /// Pointwise sum; both operands must be in NTT domain.
     pub fn add_ntt_domain(&self, other: &Self) -> Self {
         assert!(
             self.is_ntt && other.is_ntt,
@@ -659,9 +578,7 @@ impl Poly {
         }
     }
 
-    /// In-place addition when both are in NTT domain
-    ///
-    /// **Performance**: Avoids allocation, O(n) pointwise addition
+    /// In-place [`Self::add_ntt_domain`].
     pub fn add_assign_ntt_domain(&mut self, other: &Self) {
         assert!(
             self.is_ntt && other.is_ntt,
@@ -679,18 +596,7 @@ impl Poly {
         }
     }
 
-    /// In-place multiply-accumulate in NTT domain: self += a * b
-    ///
-    /// **Performance**: Single pass multiply-add without intermediate allocation.
-    ///
-    /// When the `simd-packing-offline` feature is enabled and the host
-    /// CPU exposes AVX-512-IFMA52 (Intel Ice Lake / Tiger Lake +, AMD
-    /// Zen 5), the inner loop dispatches to an 8-wide
-    /// Solinas-Montgomery multiply-accumulate kernel for the single-
-    /// prime DEFAULT_Q configuration. The dispatch is byte-identity
-    /// preserving (covered by `tests/simd_packing_offline_kat.rs`).
-    /// Without the feature flag, or on non-x86_64 targets, or on hosts
-    /// lacking AVX-512-IFMA, the scalar implementation runs unchanged.
+    /// `self += a * b` pointwise; all three operands must be in NTT domain.
     pub fn mul_acc_ntt_domain(&mut self, a: &Self, b: &Self, ctx: &NttContext) {
         assert!(
             self.is_ntt && a.is_ntt && b.is_ntt,
@@ -699,29 +605,14 @@ impl Poly {
         assert_eq!(self.moduli, a.moduli, "Moduli must match");
         assert_eq!(self.moduli, b.moduli, "Moduli must match");
 
-        // SIMD fast path: single-prime DEFAULT_Q + Solinas reduction +
-        // AVX-512-IFMA52 host feature. Falls through to the scalar
-        // loop for any condition that fails (multi-prime CRT context,
-        // non-DEFAULT_Q modulus, non-x86_64 build, host without IFMA52,
-        // or buffer length not a multiple of 8).
+        // 8-wide IFMA52 kernel, byte-identical to the scalar loop below.
         #[cfg(all(feature = "simd-packing-offline", target_arch = "x86_64"))]
         {
             if let Some(q_inv_neg) = ctx.solinas_q_inv_neg() {
                 if self.moduli.len() == 1 && self.dim % 8 == 0 && has_avx512_ifma_cached() {
-                    // SAFETY:
-                    // - has_avx512_ifma_cached() returned true: AVX-512F
-                    //   + AVX-512-IFMA are enabled on the host CPU,
-                    //   satisfying the kernel's `target_feature` invariant.
-                    // - solinas_q_inv_neg() returned Some, so the moduli
-                    //   slice is `[DEFAULT_Q]` (single CRT limb).
-                    // - dim % 8 == 0, so the per-modulus stripe length
-                    //   `self.dim` is a multiple of 8 lanes.
-                    // - acc, a, b are &mut self.coeffs / &a.coeffs /
-                    //   &b.coeffs of identical length `self.dim` (single
-                    //   CRT limb); Rust's borrow checker prevents
-                    //   aliasing between `&mut self` and `&a` / `&b`.
-                    // - All inputs are in Montgomery form within
-                    //   `[0, DEFAULT_Q)` by the NTT-domain precondition.
+                    // SAFETY: host has AVX-512F + IFMA; single DEFAULT_Q limb of
+                    // length `dim` divisible by 8; borrowck rules out aliasing;
+                    // NTT-domain precondition puts every input in `[0, DEFAULT_Q)`.
                     unsafe {
                         super::solinas_redc::avx512_ifma::solinas_mont_mul_acc_x8(
                             self.coeffs.as_mut_ptr(),
@@ -747,35 +638,14 @@ impl Poly {
         }
     }
 
-    /// Fused 3-way multiply-accumulate in NTT domain with delayed
-    /// modular reduction:
-    /// `self += a0 * b0 + a1 * b1 + a2 * b2` (all NTT-domain pointwise).
+    /// `self += a0 * b0 + a1 * b1 + a2 * b2` pointwise, reduced once at the end.
     ///
-    /// Equivalent to calling `mul_acc_ntt_domain` three times in
-    /// sequence; byte-identical output verified in
-    /// `tests/mul_acc3_ntt_domain_kat.rs`.
-    ///
-    /// Delayed modular reduction: backward recursion in
-    /// `inspiring::packing_offline` calls `mul_acc_ntt_domain` exactly
-    /// ℓ=3 times per iteration (one per gadget digit). Under the
-    /// shipping gadget config `(base = 2^20, len = 3)` on DEFAULT_Q,
-    /// each individual Montgomery product lies in `[0, q)` and
-    /// `q = 2^60 − 2^14 + 1`, so the accumulator
-    /// `self.coeffs[i] + p0 + p1 + p2` fits u64 (< 4q < 2^62 < 2^64)
-    /// and can be reduced in one pass at the end via up to 3
-    /// conditional subtracts. This collapses three per-coefficient
-    /// reduction chains into one, enables instruction-level parallelism
-    /// across the three independent multiplies, and saves two memory
-    /// writes per coefficient.
-    ///
-    /// # Requirements
-    /// - Every operand must be in NTT domain.
-    /// - Moduli must match across `self`, `a0/a1/a2`, `b0/b1/b2`.
-    /// - Every modulus `q_m` must satisfy `4 * q_m < 2^64`. For
-    ///   Raven's DEFAULT_Q (~2^60), this is always true.
+    /// The single reduction is the point: with `4 * q < 2^64` the accumulator
+    /// cannot overflow, so three reduction chains collapse into one.
     ///
     /// # Panics
-    /// On any of the requirement violations above.
+    ///
+    /// If any operand is outside NTT domain, moduli disagree, or `q >= 2^62`.
     pub fn mul_acc3_ntt_domain(
         &mut self,
         a0: &Self,
@@ -814,8 +684,7 @@ impl Poly {
                 let p0 = ctx.pointwise_mul_single_at(a0.coeffs[i], b0.coeffs[i], m);
                 let p1 = ctx.pointwise_mul_single_at(a1.coeffs[i], b1.coeffs[i], m);
                 let p2 = ctx.pointwise_mul_single_at(a2.coeffs[i], b2.coeffs[i], m);
-                // Accumulator < 4q < 2^62; reduce to [0, q) via up to
-                // three conditional subtracts.
+                // Accumulator < 4q, so three conditional subtracts suffice.
                 let mut acc = self.coeffs[i] + p0 + p1 + p2;
                 if acc >= modulus {
                     acc -= modulus;
@@ -831,13 +700,12 @@ impl Poly {
         }
     }
 
-    /// Check if polynomial is zero
+    /// True when every coefficient is zero.
     pub fn is_zero(&self) -> bool {
         self.coeffs.iter().all(|&c| c == 0)
     }
 
-    /// L-infinity norm (maximum absolute coefficient value)
-    /// For centered representation: returns max(|c|, |q - c|) for each c
+    /// L-infinity norm in centered representation, `min(c, q - c)` maximized.
     pub fn linf_norm(&self) -> u64 {
         assert!(!self.is_ntt, "Cannot compute norm in NTT domain");
         let mut max_val = 0u64;
@@ -851,7 +719,7 @@ impl Poly {
         max_val
     }
 
-    /// L2 norm squared (sum of squared coefficients in centered representation)
+    /// Squared L2 norm in centered representation.
     pub fn l2_norm_squared(&self) -> u128 {
         assert!(!self.is_ntt, "Cannot compute norm in NTT domain");
         let mut sum = 0u128;
@@ -867,23 +735,19 @@ impl Poly {
         sum
     }
 
-    /// Polynomial multiplication (method style, uses NTT internally)
     pub fn mul(&self, other: &Self) -> Self {
         let ctx = NttContext::with_moduli(self.dim, &self.moduli);
         self.mul_ntt(other, &ctx)
     }
 
-    /// Polynomial addition (method style)
     pub fn add(&self, other: &Self) -> Self {
         self + other
     }
 
-    /// Polynomial subtraction (method style)
     pub fn sub(&self, other: &Self) -> Self {
         self - other
     }
 
-    /// Negate polynomial (method style)
     pub fn negate(&self) -> Self {
         -self
     }
@@ -1065,10 +929,6 @@ mod tests {
         assert_eq!(p.dimension(), 256);
     }
 
-    /// H1: `Poly::random_with_rng_moduli` must produce reproducible
-    /// coefficients given a seeded `ChaCha20Rng`. Locks down the
-    /// RNG-injection path (used by WASM clients and deterministic
-    /// test fixtures) and asserts coefficient reproducibility.
     #[test]
     fn poly_random_with_rng_moduli_is_deterministic_under_seeded_rng() {
         use rand::SeedableRng;
@@ -1186,7 +1046,6 @@ mod tests {
         let n = 256;
         let ctx = make_ctx(n);
 
-        // a(x) * 1 = a(x)
         let a = Poly::from_coeffs_default((0..n as u64).collect());
         let one = Poly::constant(1, n, DEFAULT_Q);
 
@@ -1212,7 +1071,6 @@ mod tests {
         let ctx = make_ctx(n);
         let q = DEFAULT_Q;
 
-        // (1 + x) * (1 + x) = 1 + 2x + x^2
         let mut coeffs = vec![0u64; n];
         coeffs[0] = 1;
         coeffs[1] = 1;
@@ -1228,12 +1086,10 @@ mod tests {
 
     #[test]
     fn test_poly_mul_ntt_negacyclic() {
-        // In R_q = Z_q[X]/(X^n + 1), x^n = -1
         let n = 256;
         let ctx = make_ctx(n);
         let q = DEFAULT_Q;
 
-        // x * x^(n-1) = x^n = -1 (mod X^n + 1)
         let mut a_coeffs = vec![0u64; n];
         a_coeffs[1] = 1; // x
         let a = Poly::from_coeffs(a_coeffs, q);
@@ -1258,11 +1114,9 @@ mod tests {
         let b = Poly::from_coeffs((0..n as u64).map(|i| (i * 7) % 100).collect(), q);
         let c = Poly::from_coeffs((0..n as u64).map(|i| (i * 13) % 100).collect(), q);
 
-        // (a * b) * c
         let ab = a.mul_ntt(&b, &ctx);
         let ab_c = ab.mul_ntt(&c, &ctx);
 
-        // a * (b * c)
         let bc = b.mul_ntt(&c, &ctx);
         let a_bc = a.mul_ntt(&bc, &ctx);
 
@@ -1294,11 +1148,9 @@ mod tests {
         let b = Poly::from_coeffs((0..n as u64).map(|i| (i * 3) % 50).collect(), q);
         let c = Poly::from_coeffs((0..n as u64).map(|i| (i * 5) % 50).collect(), q);
 
-        // a * (b + c)
         let b_plus_c = &b + &c;
         let left = a.mul_ntt(&b_plus_c, &ctx);
 
-        // a * b + a * c
         let ab = a.mul_ntt(&b, &ctx);
         let ac = a.mul_ntt(&c, &ctx);
         let right = &ab + &ac;
@@ -1325,7 +1177,6 @@ mod tests {
         coeffs[1] = 4;
         let p = Poly::from_coeffs(coeffs, q);
 
-        // 3^2 + 4^2 = 9 + 16 = 25
         assert_eq!(p.l2_norm_squared(), 25);
     }
 
@@ -1338,10 +1189,8 @@ mod tests {
         let a = Poly::from_coeffs((0..n as u64).map(|i| i % 100).collect(), q);
         let b = Poly::from_coeffs((0..n as u64).map(|i| (i * 7) % 100).collect(), q);
 
-        // Standard multiplication
         let result1 = a.mul_ntt(&b, &ctx);
 
-        // NTT domain multiplication
         let a_ntt = a.to_ntt_new(&ctx);
         let b_ntt = b.to_ntt_new(&ctx);
         let mut result2 = a_ntt.mul_ntt_domain(&b_ntt, &ctx);
