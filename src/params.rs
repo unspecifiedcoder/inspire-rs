@@ -187,6 +187,13 @@ pub struct InspireParams {
 /// `extract_column_value` packs two bytes per column; `p` must exceed this.
 const COLUMN_VALUE_CEILING: u64 = u16::MAX as u64;
 
+/// Discrete-Gaussian width floor from the homomorphic-encryption security
+/// standard. Below it the LWE error distribution stops hiding the secret:
+/// `GaussianSampler` derives `tailcut = ceil(sigma * 6)`, so a small sigma
+/// leaves every non-zero table weight underflowed to 0 and the sampler emits a
+/// constant, yielding a zero key and a deterministic query.
+pub const MIN_SIGMA: f64 = 3.19;
+
 impl InspireParams {
     /// Creates 128-bit secure parameters with ring dimension d=2048.
     ///
@@ -397,6 +404,13 @@ impl InspireParams {
         // p must be at most q to allow scaling (Δ = ⌊q/p⌋)
         if self.q < self.p {
             return Err("q must be >= p");
+        }
+
+        if !self.sigma.is_finite() || self.sigma < MIN_SIGMA {
+            return Err(
+                "sigma must be finite and >= 3.19: a smaller width collapses the LWE error to a \
+                 constant, which zeroes the secret key and makes the query deterministic",
+            );
         }
 
         if self.p <= COLUMN_VALUE_CEILING {
