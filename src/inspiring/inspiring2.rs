@@ -1340,7 +1340,11 @@ impl GeneratorPowers {
     /// where that one errors.
     #[allow(
         clippy::panic,
-        reason = "kept for API compatibility; every in-tree caller goes through try_new"
+        reason = "deprecated shim; in-tree callers use try_new"
+    )]
+    #[deprecated(
+        since = "0.1.0",
+        note = "panics on a degenerate ring dimension; use `try_new`, which returns PackParamsError"
     )]
     #[must_use]
     pub fn new(d: usize) -> Self {

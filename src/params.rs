@@ -184,6 +184,9 @@ pub struct InspireParams {
     pub security_level: SecurityLevel,
 }
 
+/// `extract_column_value` packs two bytes per column; `p` must exceed this.
+const COLUMN_VALUE_CEILING: u64 = u16::MAX as u64;
+
 impl InspireParams {
     /// Creates 128-bit secure parameters with ring dimension d=2048.
     ///
@@ -394,6 +397,13 @@ impl InspireParams {
         // p must be at most q to allow scaling (Δ = ⌊q/p⌋)
         if self.q < self.p {
             return Err("q must be >= p");
+        }
+
+        if self.p <= COLUMN_VALUE_CEILING {
+            return Err(
+                "p must be > 65535: a column packs two bytes, so a smaller p silently \
+                 reduces encoded values",
+            );
         }
 
         // `gadget_decompose` emits exactly `gadget_len` base-`gadget_base`
