@@ -1,7 +1,6 @@
 //! Round-trips at increasing `(ring_dim, entries, record_bytes)` cells under
 //! both the single-prime and the 2-CRT modulus, reporting per cell, so the
-//! smallest diverging cell can be read off. The 2^20 cells are `#[ignore]`d:
-//! each costs about a minute of setup.
+//! smallest diverging cell can be read off.
 
 use raven_inspire::math::GaussianSampler;
 use raven_inspire::params::{InspireParams, SecurityLevel, DEFAULT_Q_2CRT_30BIT};
@@ -82,7 +81,13 @@ fn smoke_twopacking_inspiring(
     Ok(())
 }
 
-fn run_cell(crt_shape: &str, params: &InspireParams, entries: u64, record_bytes: usize) -> bool {
+fn run_cell(
+    crt_shape: &str,
+    params: &InspireParams,
+    entries: u64,
+    record_bytes: usize,
+    failures: &mut Vec<String>,
+) {
     let label = format!(
         "{:<6}  d={:<5} entries=2^{:<3} record={:<4} B",
         crt_shape,
@@ -91,54 +96,70 @@ fn run_cell(crt_shape: &str, params: &InspireParams, entries: u64, record_bytes:
         record_bytes
     );
     match smoke_twopacking_inspiring(params, entries, record_bytes) {
-        Ok(()) => {
-            println!("  PASS   {label}");
-            true
-        }
+        Ok(()) => println!("  PASS   {label}"),
         Err(e) => {
             println!("  FAIL   {label}  - {e}");
-            false
+            failures.push(format!("{label}  - {e}"));
         }
     }
+    assert!(
+        failures.is_empty(),
+        "cells failed to round-trip: {failures:#?}"
+    );
 }
 
 #[test]
 fn bisection_small_rings() {
-    println!("\n=== Phase E.6 smoke bisection (small rings, fast) ===");
+    println!("\n=== smoke bisection (small rings, fast) ===");
+    let mut failures: Vec<String> = Vec::new();
     for &(d, ents_log2) in &[(256usize, 8u32), (512, 9)] {
         let entries = 1u64 << ents_log2;
         for &rb in &[8usize, 32, 256] {
             let p1 = default_q_single(d);
             let p2 = two_crt_30bit(d);
-            run_cell("1-CRT ", &p1, entries, rb);
-            run_cell("2-CRT ", &p2, entries, rb);
+            run_cell("1-CRT ", &p1, entries, rb, &mut failures);
+            run_cell("2-CRT ", &p2, entries, rb, &mut failures);
         }
     }
+    assert!(
+        failures.is_empty(),
+        "cells failed to round-trip: {failures:#?}"
+    );
 }
 
 #[test]
 fn bisection_medium_rings() {
-    println!("\n=== Phase E.6 smoke bisection (medium rings) ===");
+    println!("\n=== smoke bisection (medium rings) ===");
+    let mut failures: Vec<String> = Vec::new();
     for &(d, ents_log2) in &[(1024usize, 10u32), (2048, 11)] {
         let entries = 1u64 << ents_log2;
         for &rb in &[8usize, 32, 256] {
             let p1 = default_q_single(d);
             let p2 = two_crt_30bit(d);
-            run_cell("1-CRT ", &p1, entries, rb);
-            run_cell("2-CRT ", &p2, entries, rb);
+            run_cell("1-CRT ", &p1, entries, rb, &mut failures);
+            run_cell("2-CRT ", &p2, entries, rb, &mut failures);
         }
     }
+    assert!(
+        failures.is_empty(),
+        "cells failed to round-trip: {failures:#?}"
+    );
 }
 
 #[test]
 fn bisection_large_ring_one_shard() {
-    println!("\n=== Phase E.6 smoke bisection (d=2048, 1 shard) ===");
+    println!("\n=== smoke bisection (d=2048, 1 shard) ===");
+    let mut failures: Vec<String> = Vec::new();
     let d = 2048usize;
     let entries = 1u64 << 11;
     for &rb in &[8usize, 32, 128, 256] {
         let p1 = default_q_single(d);
         let p2 = two_crt_30bit(d);
-        run_cell("1-CRT ", &p1, entries, rb);
-        run_cell("2-CRT ", &p2, entries, rb);
+        run_cell("1-CRT ", &p1, entries, rb, &mut failures);
+        run_cell("2-CRT ", &p2, entries, rb, &mut failures);
     }
+    assert!(
+        failures.is_empty(),
+        "cells failed to round-trip: {failures:#?}"
+    );
 }
