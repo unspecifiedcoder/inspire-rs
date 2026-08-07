@@ -1338,10 +1338,7 @@ impl GeneratorPowers {
 
     /// [`Self::try_new`] for callers whose signature cannot carry the failure; panics
     /// where that one errors.
-    #[allow(
-        clippy::panic,
-        reason = "deprecated shim; in-tree callers use try_new"
-    )]
+    #[allow(clippy::panic, reason = "deprecated shim; in-tree callers use try_new")]
     #[deprecated(
         since = "0.1.0",
         note = "panics on a degenerate ring dimension; use `try_new`, which returns PackParamsError"
