@@ -287,6 +287,9 @@ pub fn respond_inspiring(
     let precomp = packing_offline(&pack_params, &offline_keys, &a_ct_tilde, &ctx);
 
     // The wire format drops y_all, so re-derive it from y_body when absent.
+    // Inlined keys bypass `register_server_side`, so the geometry guard has to run here
+    // too or a width mismatch returns a successful response carrying wrong plaintext.
+    crate::pir::session::ensure_packing_width_matches(client_packing_keys, &pack_params)?;
     let derived_y_all = if client_packing_keys.y_all.is_empty() {
         if client_packing_keys.y_body.is_empty() {
             return Err(pir_err!(
@@ -441,6 +444,9 @@ pub fn respond_inspiring_cached(
 
     let precomp = packing_offline(&cache.pack_params, &cache.offline_keys, &a_ct_tilde, &ctx);
 
+    // Inlined keys bypass `register_server_side`, so the geometry guard has to run here
+    // too or a width mismatch returns a successful response carrying wrong plaintext.
+    crate::pir::session::ensure_packing_width_matches(client_packing_keys, &cache.pack_params)?;
     let derived_y_all = if client_packing_keys.y_all.is_empty() {
         if client_packing_keys.y_body.is_empty() {
             return Err(pir_err!(
@@ -609,6 +615,9 @@ pub fn respond_inspiring_cached_with_session(
 
     let t_packonline_start = t_packoff_end.map(|_| std::time::Instant::now());
 
+    // Inlined keys bypass `register_server_side`, so the geometry guard has to run here
+    // too or a width mismatch returns a successful response carrying wrong plaintext.
+    crate::pir::session::ensure_packing_width_matches(client_packing_keys, &cache.pack_params)?;
     let derived_y_all = if client_packing_keys.y_all.is_empty() {
         if client_packing_keys.y_body.is_empty() {
             return Err(pir_err!(

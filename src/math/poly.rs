@@ -44,6 +44,7 @@ fn has_avx512_ifma_cached() -> bool {
 /// assert_eq!(poly.dimension(), 256);
 /// ```
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "PolyWire")]
 pub struct Poly {
     coeffs: Vec<u64>,
     moduli: Vec<u64>,
@@ -51,6 +52,104 @@ pub struct Poly {
     dim: usize,
     crt_q0_inv_mod_q1: u64,
     is_ntt: bool,
+}
+
+/// Wire form of [`Poly`].
+///
+/// A derived `Deserialize` on `Poly` would decouple `dim` from `coeffs.len()` and
+/// bypass [`Poly::init_moduli`], the documented sole entry point for the modulus
+/// vector. `dim` is a bare fixint, so a length cap on the encoded bytes does not
+/// bound it: a small body can carry `dim = 2^44`, and `apply_automorphism` allocates
+/// `vec![0u64; poly.dimension()]` before it touches `coeffs`, which aborts the
+/// process rather than returning an error.
+#[derive(serde::Deserialize)]
+struct PolyWire {
+    coeffs: Vec<u64>,
+    moduli: Vec<u64>,
+    q: u64,
+    dim: usize,
+    crt_q0_inv_mod_q1: u64,
+    is_ntt: bool,
+}
+
+impl TryFrom<PolyWire> for Poly {
+    type Error = String;
+
+    fn try_from(w: PolyWire) -> Result<Self, Self::Error> {
+        // `Poly::default()` is all-empty and must still round-trip.
+        let is_default = w.coeffs.is_empty()
+            && w.moduli.is_empty()
+            && w.dim == 0
+            && w.q == 0
+            && w.crt_q0_inv_mod_q1 == 0;
+        if is_default {
+            return Ok(Self {
+                coeffs: w.coeffs,
+                moduli: w.moduli,
+                q: w.q,
+                dim: w.dim,
+                crt_q0_inv_mod_q1: w.crt_q0_inv_mod_q1,
+                is_ntt: w.is_ntt,
+            });
+        }
+
+        let crt_count = w.moduli.len();
+        if crt_count == 0 || crt_count > 2 {
+            return Err(format!(
+                "Poly decode refused: moduli count {crt_count} outside 1..=2, which                  init_moduli enforces for every constructed Poly"
+            ));
+        }
+        let expected = w
+            .dim
+            .checked_mul(crt_count)
+            .ok_or_else(|| format!("Poly decode refused: dim {} * {crt_count} overflows", w.dim))?;
+        if w.coeffs.len() != expected {
+            return Err(format!(
+                "Poly decode refused: dim {} with {crt_count} moduli needs {expected}                  coefficients, got {}. A dim larger than the coefficients backing it                  makes dimension() a length no buffer satisfies",
+                w.dim,
+                w.coeffs.len()
+            ));
+        }
+        let q = crate::math::crt::crt_modulus(&w.moduli);
+        if w.q != q {
+            return Err(format!(
+                "Poly decode refused: q {} is not the CRT product {q} of the encoded moduli",
+                w.q
+            ));
+        }
+        // `try_mod_inverse`, never `mod_inverse`: the latter is documented to panic on a
+        // non-invertible value and explicitly forbids callers that cannot establish
+        // gcd == 1 via `InspireParams::validate()`. A wire decoder never can, and
+        // panicking here would put an abort on the exact input class this guard exists to
+        // reject.
+        let inv = if crt_count == 2 {
+            match crate::math::crt::try_mod_inverse(w.moduli[0], w.moduli[1]) {
+                Some(v) => v,
+                None => {
+                    return Err(format!(
+                        "Poly decode refused: encoded moduli {} and {} are not coprime, so                          no CRT inverse exists",
+                        w.moduli[0], w.moduli[1]
+                    ))
+                }
+            }
+        } else {
+            0
+        };
+        if w.crt_q0_inv_mod_q1 != inv {
+            return Err(format!(
+                "Poly decode refused: crt_q0_inv_mod_q1 {} does not match the inverse {inv}                  derived from the encoded moduli",
+                w.crt_q0_inv_mod_q1
+            ));
+        }
+        Ok(Self {
+            coeffs: w.coeffs,
+            moduli: w.moduli,
+            q: w.q,
+            dim: w.dim,
+            crt_q0_inv_mod_q1: w.crt_q0_inv_mod_q1,
+            is_ntt: w.is_ntt,
+        })
+    }
 }
 
 impl Poly {

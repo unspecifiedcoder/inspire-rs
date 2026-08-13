@@ -344,6 +344,36 @@ struct Inner {
     next_handle: u64,
 }
 
+/// Refuse client packing keys whose gamma differs from the server's.
+///
+/// The automorphism generator is `(2n/gamma)+1`, so keys built at another gamma are
+/// rotations under a different automorphism than the `bold_t` they multiply.
+/// `packing_online` guards its loop with `if i < len` and SKIPS the shortfall rather than
+/// rejecting it, so a mismatch surfaces as a successful response carrying wrong plaintext.
+///
+/// Called from every site where client-supplied keys meet server pack params:
+/// `register_server_side` here, plus the three inlined-key respond paths.
+///
+/// # Errors
+/// [`crate::pir::Result`] error naming both widths.
+pub(crate) fn ensure_packing_width_matches(
+    keys: &ClientPackingKeys,
+    pack_params: &PackParams,
+) -> Result<()> {
+    if keys.num_to_pack == pack_params.num_to_pack {
+        return Ok(());
+    }
+    Err(pir_err!(
+        "packing-key width mismatch: client keys declare gamma = {}, server pack params \
+         use gamma = {}. The automorphism generator is (2n/gamma)+1, so these keys rotate \
+         under a different automorphism than the server's precomputed table and \
+         extraction would return wrong bytes with no error. The client must re-derive its \
+         packing keys against the current CRS.",
+        keys.num_to_pack,
+        pack_params.num_to_pack
+    ))
+}
+
 impl ServerSessionStore {
     /// Build an empty store.
     pub fn new() -> Self {
@@ -371,6 +401,11 @@ impl ServerSessionStore {
         pack_params: &PackParams,
         ctx: &NttContext,
     ) -> Result<ServerSessionHandle> {
+        // Geometry must agree before any derivative is built. Not the only place the
+        // two meet: `respond_inspiring`, `respond_inspiring_cached` and
+        // `respond_inspiring_cached_with_session` accept inlined keys and pair them with
+        // server pack params too, so each calls the same guard.
+        ensure_packing_width_matches(&keys, pack_params)?;
         keys.ensure_server_derivatives(pack_params, ctx);
         self.register(keys)
     }
