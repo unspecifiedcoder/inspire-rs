@@ -123,3 +123,34 @@ fn respond_refuses_inlined_keys_from_a_different_width() {
         "the refusal must name the mismatch; got: {msg}"
     );
 }
+
+/// The gamma scalar is a self-reported label; `y_body` is the material the packing sum
+/// actually indexes. A client can declare the server's gamma and still send short key
+/// material: `generate_rotations` sizes the outer vector from the SERVER's gamma, so the
+/// outer bound looks right, while each rotation is only `y_body.len()` long and
+/// `packing_online` skips every gadget digit past it. The sum silently loses terms.
+#[test]
+fn keys_with_truncated_material_are_refused_even_at_the_declared_width() {
+    let (mut keys, pack) = keys_at(8);
+    assert_eq!(keys.num_to_pack, pack.num_to_pack, "gamma agrees");
+    assert_eq!(
+        keys.y_body.len(),
+        pack.gadget.len,
+        "a well-formed key carries one y_body poly per gadget digit"
+    );
+
+    keys.y_body
+        .pop()
+        .expect("drop one gadget digit of key material");
+
+    let ctx = NttContext::new(RING_DIM, pack.q);
+    let store = ServerSessionStore::new();
+    let err = store
+        .register_server_side(keys, &pack, &ctx)
+        .expect_err("short key material must be refused even when gamma matches");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("material mismatch"),
+        "the refusal must name the material, not the width; got: {msg}"
+    );
+}

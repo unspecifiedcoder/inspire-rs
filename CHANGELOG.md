@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No substantive unreleased changes._
+### Changed
+
+- Corrected the security claim throughout the docs. `secure_128_d2048` measures
+  **121.5 bits**, not 128, at the shipped `DEFAULT_Q = 2^60 - 2^14 + 1`
+  (malb/lattice-estimator @ 3e48ef4, binding attack `primal_bdd`). The 0.1.0
+  entry below records the original claim and is left as written. `validate()`
+  runs no lattice estimate and nothing reads `security_level`, so that field is
+  a declared target rather than a verified property. See PRIVACY.md limitation 6.
 
 ## [0.2.0] - 2026-02-13
 

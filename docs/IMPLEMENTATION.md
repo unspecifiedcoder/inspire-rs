@@ -6,7 +6,7 @@ This document outlines the implementation of InsPIRe PIR protocol in Rust for pr
 
 ## Key Design Decisions
 
-### 1. Parameter Selection (128-bit Security)
+### 1. Parameter Selection
 
 Based on the InsPIRe paper's validated parameters:
 
@@ -221,7 +221,9 @@ Core (no external FHE library needed):
 
 ## Security Considerations
 
-- Parameters validated via lattice-estimator for 128-bit security
+- Shipped parameters measure 121.5 bits, not the 128 the preset name implies
+  (malb/lattice-estimator @ 3e48ef4, `primal_bdd`). `validate()` runs no lattice
+  check, so `security_level` is a declared target only.
 - CRS model: random CRS components and key-switching matrices are fixed at `setup`; the RLWE secret key is generated once and reused across queries
 - No client-specific server state (supports anonymity)
 - Circular security assumption (standard for lattice FHE)

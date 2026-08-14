@@ -8,7 +8,7 @@ This document analyzes the communication costs of InsPIRe PIR for Ethereum state
 
 ## Measured Communication (d=2048)
 
-Benchmarked with 128-bit security parameters:
+Benchmarked with the `secure_128_d2048` preset (measures 121.5 bits):
 
 | Component | Full (Binary) | Seeded (Binary) | Seeded (JSON) |
 |-----------|---------------|-----------------|---------------|

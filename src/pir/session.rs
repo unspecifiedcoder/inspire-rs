@@ -360,6 +360,23 @@ pub(crate) fn ensure_packing_width_matches(
     keys: &ClientPackingKeys,
     pack_params: &PackParams,
 ) -> Result<()> {
+    // The key MATERIAL, not just the declared width. `generate_rotations` sizes the
+    // outer vector from the server's gamma, but each rotation is `y_body.len()` long,
+    // and `packing_online`'s inner loop skips every digit `k >= y_all[i].len()`. A short
+    // `y_body` under a correct `num_to_pack` therefore drops terms from the packing sum
+    // and returns wrong plaintext at HTTP 200 - the same failure the gamma check exists
+    // to stop, reached by a field the gamma check never reads.
+    if keys.y_body.len() != pack_params.gadget.len {
+        return Err(pir_err!(
+            "packing-key material mismatch: client sent {} y_body polynomials, server \
+             gadget has {} digits. `packing_online` skips every digit past the shorter \
+             of the two, so the packing sum would silently lose terms and extraction \
+             would return wrong bytes with no error. The client must re-derive its \
+             packing keys against the current CRS.",
+            keys.y_body.len(),
+            pack_params.gadget.len
+        ));
+    }
     if keys.num_to_pack == pack_params.num_to_pack {
         return Ok(());
     }

@@ -96,7 +96,8 @@ impl TryFrom<PolyWire> for Poly {
         let crt_count = w.moduli.len();
         if crt_count == 0 || crt_count > 2 {
             return Err(format!(
-                "Poly decode refused: moduli count {crt_count} outside 1..=2, which                  init_moduli enforces for every constructed Poly"
+                "Poly decode refused: moduli count {crt_count} outside 1..=2, which \
+                 init_moduli enforces for every constructed Poly"
             ));
         }
         let expected = w
@@ -105,9 +106,36 @@ impl TryFrom<PolyWire> for Poly {
             .ok_or_else(|| format!("Poly decode refused: dim {} * {crt_count} overflows", w.dim))?;
         if w.coeffs.len() != expected {
             return Err(format!(
-                "Poly decode refused: dim {} with {crt_count} moduli needs {expected}                  coefficients, got {}. A dim larger than the coefficients backing it                  makes dimension() a length no buffer satisfies",
+                "Poly decode refused: dim {} with {crt_count} moduli needs {expected} \
+                 coefficients, got {}. A dim larger than the coefficients backing it \
+                 makes dimension() a length no buffer satisfies",
                 w.dim,
                 w.coeffs.len()
+            ));
+        }
+        // Count, not value, is all the guards above establish. `crt_modulus` folds with
+        // `saturating_mul`, so moduli of 0 give q = 0 and an encoded q of 0 matches;
+        // reduction mod 0 then divides by zero, and mod 1 collapses every coefficient to
+        // a constant. Neither can arise from `init_moduli`, whose callers come from
+        // validated params, so only the wire needs this.
+        if let Some(bad) = w.moduli.iter().copied().find(|m| *m < 2) {
+            return Err(format!(
+                "Poly decode refused: modulus {bad} is below 2. Reduction mod 0 divides by \
+                 zero and mod 1 maps every coefficient to 0, so no constructed Poly holds it"
+            ));
+        }
+        // A product that overflows saturates at u64::MAX, which an encoded q of u64::MAX
+        // would then match, so the equality check below cannot catch it.
+        if w.moduli
+            .iter()
+            .copied()
+            .try_fold(1u64, u64::checked_mul)
+            .is_none()
+        {
+            return Err(format!(
+                "Poly decode refused: the encoded moduli {:?} multiply past u64, so their \
+                 CRT product saturates and no q can faithfully represent it",
+                w.moduli
             ));
         }
         let q = crate::math::crt::crt_modulus(&w.moduli);
@@ -127,7 +155,8 @@ impl TryFrom<PolyWire> for Poly {
                 Some(v) => v,
                 None => {
                     return Err(format!(
-                        "Poly decode refused: encoded moduli {} and {} are not coprime, so                          no CRT inverse exists",
+                        "Poly decode refused: encoded moduli {} and {} are not coprime, so \
+                         no CRT inverse exists",
                         w.moduli[0], w.moduli[1]
                     ))
                 }
@@ -137,7 +166,8 @@ impl TryFrom<PolyWire> for Poly {
         };
         if w.crt_q0_inv_mod_q1 != inv {
             return Err(format!(
-                "Poly decode refused: crt_q0_inv_mod_q1 {} does not match the inverse {inv}                  derived from the encoded moduli",
+                "Poly decode refused: crt_q0_inv_mod_q1 {} does not match the inverse {inv} \
+                 derived from the encoded moduli",
                 w.crt_q0_inv_mod_q1
             ));
         }
@@ -708,7 +738,8 @@ impl Poly {
         #[cfg(all(feature = "simd-packing-offline", target_arch = "x86_64"))]
         {
             if let Some(q_inv_neg) = ctx.solinas_q_inv_neg() {
-                if self.moduli.len() == 1 && self.dim % 8 == 0 && has_avx512_ifma_cached() {
+                if self.moduli.len() == 1 && self.dim.is_multiple_of(8) && has_avx512_ifma_cached()
+                {
                     // SAFETY: host has AVX-512F + IFMA; single DEFAULT_Q limb of
                     // length `dim` divisible by 8; borrowck rules out aliasing;
                     // NTT-domain precondition puts every input in `[0, DEFAULT_Q)`.

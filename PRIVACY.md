@@ -20,9 +20,10 @@ HTTP endpoints.
 ### Query Privacy (Computational)
 
 The server cannot determine which *index within a shard* the client is querying,
-assuming the hardness of ring-LWE with the chosen parameters (128-bit security
-level). The query is an RGSW encryption of an inverse monomial; without the
-secret key, the server gains no information about the local index.
+assuming the hardness of ring-LWE with the chosen parameters (121.5 bits at the
+shipped modulus, see Known Limitation 6). The query is an RGSW encryption of an
+inverse monomial; without the secret key, the server gains no information about
+the local index.
 
 This guarantee stops at the shard boundary. `shard_id` travels in cleartext and
 the shard is capped at `ring_dim` entries, so the anonymity set is at most 2048
@@ -55,7 +56,7 @@ shard, not the database.
 **A shard is hard-capped at `ring_dim` entries.** `encode_db` rejects any
 `ShardConfig` whose `entries_per_shard` exceeds `params.ring_dim`
 (`src/pir/encode_db.rs:125`), because InspiRING packing places one entry per ring
-coefficient. The shipped 128-bit preset `InspireParams::secure_128_d2048` sets
+coefficient. The shipped preset `InspireParams::secure_128_d2048` sets
 `ring_dim = 2048` (`src/params.rs:213`, `src/params.rs:230`), so the largest
 encodable shard, and therefore the largest achievable anonymity set, is **2048
 entries**. The Raven Railgun deployment that consumes this crate runs exactly at
@@ -129,6 +130,33 @@ learns which indices were queried.
 
 **Mitigation**: Redirect stdout in automated deployments. The library API
 (`inspire::pir`) does not perform any logging — only the CLI binaries do.
+
+### 6. Shipped Parameters Measure 121.5 Bits, Not 128
+
+`InspireParams::secure_128_d2048` is named for a 128-bit target it does not
+reach. Measured with malb/lattice-estimator @ 3e48ef4 under Sage, the binding
+attack is `primal_bdd` and the level is **121.5 bits**.
+
+The cause is the modulus. This crate ships `DEFAULT_Q = 2^60 - 2^14 + 1`
+(`src/math/mod_q.rs`), chosen because the upstream 2-CRT form (q ~ 2^55.89)
+exhausted the noise budget at 256 B records and decryption scrambled silently.
+Security falls as q grows at fixed `ring_dim` and `sigma`: log2 q = 57 is the
+largest modulus clearing 128 bits (128.8), and log2 q = 58 already measures
+126.3. The preset name predates that measurement.
+
+`security_level: SecurityLevel::Bits128` does not contradict this at runtime
+because nothing reads it: `InspireParams::validate` checks structural, NTT and
+sigma invariants and runs no lattice estimate. The field is a declared target,
+not a verified property.
+
+**Impact**: query privacy rests on 121.5-bit ring-LWE hardness, not 128. That is
+above every near-term practical attack and below the level the preset name and
+the pre-correction documentation advertised. Deployments with a hard 128-bit
+floor must not use this preset as shipped.
+
+**Mitigation**: none applied. Reducing q to log2 q = 57 would clear 128 bits and
+reopen the noise failure this modulus was raised to fix, so the two constraints
+are in direct tension and the tradeoff is unresolved.
 
 ## Threat Model
 

@@ -20,7 +20,8 @@ InsPIRe achieves state-of-the-art communication efficiency for single-server PIR
 
 ## Features
 
-- 128-bit security (validated via lattice-estimator)
+- 121.5-bit security at the shipped modulus (malb/lattice-estimator @ 3e48ef4,
+  binding attack `primal_bdd`). See PRIVACY.md for the derivation.
 - Support for 32-byte entries (Ethereum state format)
 - Database sharding for large datasets
 - CLI binaries for server/client/setup
@@ -201,7 +202,7 @@ let entry = extract_with_variant(&crs, &state, &response, entry_size, InspireVar
 
 ## Performance
 
-Benchmarked on AMD/Intel x64 server with d=2048, 128-bit security:
+Benchmarked on AMD/Intel x64 server with d=2048, the `secure_128_d2048` preset:
 
 ### Server Response Time
 

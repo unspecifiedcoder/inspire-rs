@@ -84,3 +84,41 @@ fn an_empty_modulus_vector_is_refused_unless_the_whole_value_is_default() {
         );
     }
 }
+
+/// The count guard bounds how MANY moduli arrive, never their values. A modulus of 0
+/// makes `crt_modulus` return 0, so an encoded `q` of 0 matches it and every structural
+/// check passes; the single-modulus path never reaches the coprimality guard. Downstream
+/// reduction then divides by zero on wire-supplied input, inside a library.
+#[test]
+fn a_zero_modulus_is_refused() {
+    let p = Poly::constant(7, 2, DEFAULT_Q);
+    let mut bytes = bincode::serialize(&p).expect("serialize");
+
+    // DEFAULT_Q appears twice: as moduli[0] and as q. Zero both so the CRT product still
+    // equals the encoded q and only the VALUE guard can refuse it.
+    let needle = DEFAULT_Q.to_le_bytes();
+    let mut patched = 0usize;
+    let mut at = 0;
+    while at + 8 <= bytes.len() {
+        if bytes[at..at + 8] == needle {
+            bytes[at..at + 8].copy_from_slice(&0u64.to_le_bytes());
+            patched += 1;
+            at += 8;
+        } else {
+            at += 1;
+        }
+    }
+    assert_eq!(patched, 2, "expected moduli[0] and q to carry DEFAULT_Q");
+
+    let err = bincode::deserialize::<Poly>(&bytes)
+        .expect_err("a zero modulus must be refused, not divided by");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("Poly decode refused"),
+        "the refusal must name itself; got: {msg}"
+    );
+    assert!(
+        msg.contains("modulus"),
+        "the refusal must name the modulus value; got: {msg}"
+    );
+}

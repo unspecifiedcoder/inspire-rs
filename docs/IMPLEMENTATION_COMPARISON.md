@@ -222,12 +222,12 @@ run_ypir_batched(&params, protocol_type, &mut measurement);
 
 | Aspect | inspire-rs | Google |
 |--------|------------|--------|
-| Target security | 128-bit | 128-bit |
+| Target security | 128-bit (measures 121.5) | 128-bit |
 | Noise analysis | External (lattice-estimator) | Built-in noise_analysis module |
 | Parameter validation | Manual via InspireParams | Auto-tuned per scenario |
 | Correctness bounds | Implicit | Explicit subgaussian analysis |
 
-Both implementations target 128-bit security. Google includes built-in noise analysis; inspire-rs validates parameters externally via lattice-estimator.
+Both implementations target 128-bit security. Google includes built-in noise analysis; inspire-rs has no built-in check, and the external lattice-estimator run measured the shipped preset at 121.5 bits.
 
 ---
 

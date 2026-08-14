@@ -1,8 +1,10 @@
 //! Parameter sets for InsPIRe PIR
 //!
 //! This module defines the cryptographic parameters for the InsPIRe protocol,
-//! including ring dimensions, moduli, and security levels. Parameters are
-//! validated via lattice-estimator to ensure 128-bit or 256-bit security.
+//! including ring dimensions, moduli, and security levels. `validate` checks
+//! structural and noise invariants only: it runs no lattice estimate, and
+//! `security_level` is a declared target nothing verifies. The shipped
+//! `secure_128_d2048` measures 121.5 bits, not 128 (see PRIVACY.md).
 //!
 //! # Overview
 //!
@@ -16,7 +18,7 @@
 //! ```
 //! use raven_inspire::params::{InspireParams, SecurityLevel};
 //!
-//! // Use recommended 128-bit secure parameters
+//! // The shipped preset. Measures 121.5 bits, not 128; see PRIVACY.md.
 //! let params = InspireParams::secure_128_d2048();
 //! assert!(params.validate().is_ok());
 //!
@@ -37,8 +39,11 @@ pub const DEFAULT_CRT_MODULI: [u64; 2] = [268_369_921, 249_561_089];
 ///
 /// # Variants
 ///
-/// * `Bits128` - 128-bit security, recommended for most applications
-/// * `Bits256` - 256-bit security, for high-security environments
+/// * `Bits128` - declares a 128-bit target
+/// * `Bits256` - declares a 256-bit target
+///
+/// Both are declarations. No code reads this field and `validate` runs no
+/// lattice estimate, so a variant here is not evidence of the level it names.
 ///
 /// # Example
 ///
@@ -49,9 +54,9 @@ pub const DEFAULT_CRT_MODULI: [u64; 2] = [268_369_921, 249_561_089];
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SecurityLevel {
-    /// 128-bit security (recommended for most applications)
+    /// Declared 128-bit target. Not validated; see the type-level note.
     Bits128,
-    /// 256-bit security (conservative, for high-security environments)
+    /// Declared 256-bit target. Not validated; see the type-level note.
     Bits256,
 }
 
@@ -115,7 +120,7 @@ pub enum InspireVariant {
 /// * `sigma` - Standard deviation for discrete Gaussian error sampling
 /// * `gadget_base` - Base for gadget decomposition (typically 2^20)
 /// * `gadget_len` - Number of gadget digits: ℓ = ⌈log_z(q)⌉
-/// * `security_level` - Target security level (128-bit or 256-bit)
+/// * `security_level` - declared target; never read, never validated
 ///
 /// # Example
 ///
@@ -162,7 +167,7 @@ pub struct InspireParams {
     /// Standard deviation for discrete Gaussian error sampling.
     ///
     /// Controls the noise added during encryption for security.
-    /// Typical value: 6.4 for 128-bit security.
+    /// Typical value: 6.4, the width the shipped presets use.
     pub sigma: f64,
 
     /// Gadget decomposition base z.
@@ -195,7 +200,11 @@ const COLUMN_VALUE_CEILING: u64 = u16::MAX as u64;
 pub const MIN_SIGMA: f64 = 3.19;
 
 impl InspireParams {
-    /// Creates 128-bit secure parameters with ring dimension d=2048.
+    /// Creates the shipped d=2048 preset.
+    ///
+    /// The name predates the measurement: at `DEFAULT_Q` this parameter set is
+    /// 121.5 bits, not 128 (malb/lattice-estimator @ 3e48ef4, binding attack
+    /// `primal_bdd`). log2 q = 57 is the largest modulus clearing 128 bits.
     ///
     /// These are the recommended parameters for most applications, providing
     /// a good balance between security, performance, and noise margin.
@@ -205,7 +214,7 @@ impl InspireParams {
     ///
     /// A new `InspireParams` instance with:
     /// - `ring_dim`: 2048
-    /// - `q`: product of CRT moduli (~2^56, NTT-friendly per modulus)
+    /// - `q`: `DEFAULT_Q` = 2^60 - 2^14 + 1, a single NTT-friendly prime
     /// - `p`: 65537 (Fermat prime F4)
     /// - `sigma`: 6.4
     /// - `gadget_base`: 2^20
@@ -248,7 +257,10 @@ impl InspireParams {
         }
     }
 
-    /// Creates 128-bit secure parameters with ring dimension d=4096.
+    /// Creates d=4096 parameters carrying a declared 128-bit target.
+    ///
+    /// The lattice-estimator run that measured `secure_128_d2048` at 121.5 bits
+    /// did not cover this ring dimension, so its level is unmeasured.
     ///
     /// These parameters provide more noise margin than d=2048, suitable for
     /// applications requiring additional homomorphic operations or higher
@@ -258,7 +270,7 @@ impl InspireParams {
     ///
     /// A new `InspireParams` instance with:
     /// - `ring_dim`: 4096
-    /// - `q`: product of CRT moduli (~2^56, NTT-friendly per modulus)
+    /// - `q`: `DEFAULT_Q` = 2^60 - 2^14 + 1, a single NTT-friendly prime
     /// - `p`: 65537 (Fermat prime F4)
     /// - `sigma`: 6.4
     /// - `gadget_base`: 2^20
