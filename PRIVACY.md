@@ -59,9 +59,9 @@ shard, not the database.
 coefficient. The shipped preset `InspireParams::secure_128_d2048` sets
 `ring_dim = 2048` (`src/params.rs:213`, `src/params.rs:230`), so the largest
 encodable shard, and therefore the largest achievable anonymity set, is **2048
-entries**. The Raven Railgun deployment that consumes this crate runs exactly at
-that cap: `record_size = 512`, `entries_per_shard = 2048`
-(`adapters/railgun/examples/mainnet-6-instance.toml` in the consuming repo).
+entries**. The preset is dimensioned for deployments that size
+`entries_per_shard` at that cap, so an operator running it as shipped is at the
+bound rather than comfortably inside it.
 
 **Impact**: An observer of a single query learns the target is one of at most
 2048 entries in the named shard. Over a database of N entries that is a
