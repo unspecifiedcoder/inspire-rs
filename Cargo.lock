@@ -466,6 +466,7 @@ dependencies = [
  "serde",
  "serde_json",
  "subtle",
+ "syn",
  "tiny-keccak",
  "tracing",
 ]

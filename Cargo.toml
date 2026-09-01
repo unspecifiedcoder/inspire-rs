@@ -122,6 +122,10 @@ mod-switch-response = []
 
 [dev-dependencies]
 proptest = "1.4"
+# Test-only: `constant_time_source_invariant` parses `from_signed`'s AST rather
+# than grepping its source text, so comments cannot trip it and `match` cannot
+# slip past it. Already in the lockfile transitively via serde_derive.
+syn = { version = "2", features = ["full", "visit", "parsing"] }
 
 [[bench]]
 name = "spiral_mod_switch_bench"
